@@ -1,0 +1,15 @@
+# Main attention-probe sweep (plan step 5). Inputs without finished features are skipped.
+tasks: [P1, P1s, P1d, P2]
+inputs: [B-mean, B-state, B-pixel, V0, V1, V1i, V1m, V2, V3, V3h]
+lrs: [3.0e-4, 1.0e-3]
+seeds: [0, 1, 2]
+train:
+  epochs: 40
+  batch_size: 256
+  patience: 5
+# P4 runs after the main sweep: V0 concatenated with the `top` candidates that have the best val nMSE on `task`.
+p4:
+  task: P1s
+  base: V0
+  top: 2
+  candidates: [V1, V1i, V1m, V2, V3, V3h]

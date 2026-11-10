@@ -36,7 +36,7 @@
 | 训练清单 / 机器人配置 / 归一化统计 | `/mnt/work/lists/train_c50.txt`、`/mnt/work/lingbot_cfg/robot_configs/robotwin_c50.yaml`、`/mnt/work/lingbot_cfg/norm_stats/robotwin_c50.json`（sha256 `424112547ad9dd…`） | 台账 #20 |
 | DINO-Video 教师 | `/mnt/work/weights/lingbot-vla-v2-6b/dino_video/teacher_step_10000.pth`、`config.yaml` | 训练 runbook 7.2 |
 | 训练镜像 | `lingbotvla-train:20261017-be969b8-r1`：torch 2.8 cu129、**transformers 4.57.3**（已含 `VJEPA2Model`）、lerobot 0.4.2、datasets 3.6、einops、av、torchcodec；**没有 timm** | `requirements.txt`，台账 #1 |
-| Pod 环境 | `source $D/code/lingbot-vla-v2/research/tools/pod/pod.env`：变量 `D`、`W`、`CFG`、`R`、`HF_HOME`；函数 `lb_run` | `research/tools/pod/pod.env` |
+| Pod 环境 | `source /mnt/vla/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env`：变量 `D`、`W`、`CFG`、`R`、`HF_HOME`；函数 `lb_run`。`LB` 自动取 pod.env 所在的仓库目录 | `research/tools/pod/pod.env` |
 | 读数据时不解码图片的做法 | `agx_run.py` 的 `_non_image_view`：`hf_dataset.remove_columns(图像列)` | `research/tools/pod/agx_run.py` |
 | 用 curl 按清单下载 | `mirror_fetch.sh`，配合 `tools/hf_manifest.py`、`tools/verify_downloads.py` | 训练 runbook 5.9 |
 | 台账工具 | `research/tools/ledger.py`，默认写到 `research/ledger/` | — |
@@ -92,7 +92,7 @@
 
 **设计说明：**
 - **V1 和 V1i 对比：** 看"当前帧和未来帧放进同一个 clip 联合编码"有没有好处。DINO-Video 用的是联合编码（块因果）；V-JEPA 是双向注意力，联合编码时未来 token 也能看到当前帧。
-- **V2 的用途：** 测试多帧中间运动信息的价值。代价是训练时数据管线每个样本要多解码 6 帧（P5 实测）。即使 V2 最好，也要和它带来的成本一起权衡。
+- **V2 的用途：** 测试多帧中间运动信息的价值。代价是训练时数据管线每个样本要多解码 5 帧（7 张不同的帧减去训练已解码的 2 张；P5 实测）。即使 V2 最好，也要和它带来的成本一起权衡。
 - **V3h 的用途：** V-JEPA 2.1 是在 384 分辨率上训练的。看在原生分辨率下取特征再降采样，是否比直接用 256 好。
 - **时间尺度：** V-JEPA 的时间 RoPE 只按 tubelet 序号编码，2 个 tubelet 的 clip 会被模型当成相邻约 0.5 秒（预训练约 4 fps）。实际间隔约 1 秒，两者有偏差，但对所有 V-JEPA 变体都一样，所以不额外处理。
 - **V4 默认不做。** 只有在 DINOv3 的 gated 权重能拿到，而且需要解释"DINO-Video 的视频训练本身带来了多少"时才做。
@@ -171,9 +171,11 @@
      extract_features.py  # 按变体提取特征，分片保存，可断点续跑
      train_probe.py       # 注意力探针（P1/P1s/P1Δ/P2/P4，以及 B-* 基线）
      ridge_probe.py       # 线性探针与 P3
+     teachers.py          # 各变体的教师封装：224 的 uint8 帧进，当前 / 未来 token 出
      bench_teacher.py     # P5：教师前向和解码耗时
      report.py            # 汇总表格、bootstrap 置信区间、PCA 可视化
      configs/variants.yaml
+     configs/sweep_main.yaml
      tests/
    lingbotvla/models/vla/vision_models/jepa/
      __init__.py
@@ -185,14 +187,14 @@
    - 用随机初始化的小 ViT 测 `teacher.py` 的形状契约：输入 `[B, 3, T, H, W]`，输出 `(future[B, 256, 1024], current[B, 256, 1024])`。
 4. 打包上传（训练机上不放 GitHub 凭证，所以不在 Pod 里 `git clone`）：
    - 本地执行 `git archive --format=tar.gz -o lingbot-$(git rev-parse --short HEAD).tar.gz HEAD`。`embodiedx/` 被 `.gitignore` 排除，不会打进包里；
-   - 包只有几十 MB，可以从 PVC 页面上传到 `$D/code/`；
-   - 解压到 `$D/code/lingbot-vla-v2`，记录 sha256 和 commit。
+   - 包只有几十 MB，从 PVC 页面上传到 PVC 根目录的 `code/`（`lingbot-data` 上挂载为 `/mnt/vla/code`；`/mnt/work` 是子目录 `embodiedx`，里面没有 `code/`）；
+   - 解压到 `/mnt/vla/code/lingbot-vla-v2-jepa`，记录 sha256 和 commit（`export LB_COMMIT=<commit>`，`extract_features` 会写进 `meta.json`）。
 
 ### T1.1 教师权重与依赖就位（Pod，白天用 `lingbot-data`，经代理）
 
 先设置代理（只在下载时设，用完就 `unset`）。代理地址和 `no_proxy` 列表见 `embodiedx` 训练 runbook 第 1 节，不写进仓库：
 ```bash
-source /mnt/work/code/lingbot-vla-v2/research/tools/pod/pod.env
+source /mnt/vla/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env
 export http_proxy=$POD_PROXY https_proxy=$POD_PROXY HTTP_PROXY=$POD_PROXY HTTPS_PROXY=$POD_PROXY \
        no_proxy=$POD_NO_PROXY NO_PROXY=$POD_NO_PROXY   # 事先 export POD_PROXY / POD_NO_PROXY
 V=$D/weights/vjepa; mkdir -p $V
@@ -244,7 +246,7 @@ for u in https://hf-mirror.com/facebook/vjepa2-vitl-fpc64-256/resolve/b3c1679b7c
 ### 步骤 1：建样本索引和标签（`lingbot-data`，白天，CPU）
 
 ```bash
-source /mnt/work/code/lingbot-vla-v2/research/tools/pod/pod.env   # 已把本仓库放到 PYTHONPATH 最前面
+source /mnt/vla/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env   # 已把本仓库放到 PYTHONPATH 最前面
 export OMP_NUM_THREADS=1
 P=$D/jepa/probe; mkdir -p $P
 python -m research.jepa_probe.build_index \
@@ -283,20 +285,22 @@ python -m research.jepa_probe.build_index \
 ### 步骤 3：提特征（夜间，1–2 张 GPU）
 
 ```bash
-for v in V0 V1 V1i V1m V2 V3 V3h; do
+cd $LB
+for v in V0 B-pixel V1 V1i V1m V2 V3 V3h; do
   CUDA_VISIBLE_DEVICES=0 python -m research.jepa_probe.extract_features \
     --variant $v --variants_cfg research/jepa_probe/configs/variants.yaml \
-    --index $P/index --out $P/features/$v --batch 64 --num_workers 16 --dtype bf16 \
-    --pool 8 --save_full_for viz1000
+    --index $P/index --out $P/features/$v --batch 64 --num_workers 16 --dtype bf16 --viz 1000
 done
 ```
 
-- **合并前向：** V1 和 V1m 可以共用一次前向（`output_hidden_states=True`），由脚本合并。
+- **先小规模试跑：** 每个变体先加 `--max_shards 1` 跑一个分片（2048 个样本），看耗时和输出形状，再去掉这个参数跑完。已完成的分片会自动跳过。
+- **B-pixel** 也作为一个"变体"提取（两帧各缩到 16×16，按 2×2 组成 64 个 12 维 token），供探针基线使用。
+- **V0** 用 `variants.yaml` 里抄自训练配置的 `video` 段，DINO 权重在 `${W}/lingbot-vla-v2-6b/dino_video/`。
 - **输出：** `features/<v>/shard_*.npz`，每个样本含 `cur[64,1024]` 和 `fut[64,1024]`（fp16）；外加：
   - `stats.npz`：训练集上逐通道的均值和方差，以及整体 token 的方差。阶段三要用它来换算 loss 权重；
-  - `viz1000/`：1000 个固定样本的完整 16×16 token，用于 PCA 可视化；
-  - `meta.json`：变体配置、代码和权重的 sha256、耗时。
-- **断点续跑：** 已完成的分片会跳过。
+  - 可视化样本（每个任务第一条测试 episode 的全部样本，约 850 个）的完整 16×16 token，存在对应分片的 `viz_ids` / `viz_cur` / `viz_fut` 里；
+  - `meta.json`：变体配置、代码 commit（取自 `LB_COMMIT`）、权重的 sha256、耗时。
+- **断点续跑：** 已完成的分片会跳过；分片先写临时文件再改名，中途被杀不会留下半个分片。
 - **耗时估计：**
   - 每个 2 帧变体要解码约 8.6 万张 PNG，16 个 worker 下以解码为主，约 5–10 分钟；
   - V2 每个样本有 7 张不同的帧，共约 30 万张，约 20–30 分钟；
@@ -308,13 +312,14 @@ done
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 python -m research.jepa_probe.bench_teacher \
-  --variants V0,V1,V1i,V2,V3,V3h --batch 64 --iters 50 --warmup 10 --dtype bf16 \
+  --variants V0,V1,V1i,V2,V3,V3h --variants_cfg research/jepa_probe/configs/variants.yaml \
+  --index $P/index --batch 64 --iters 50 --warmup 10 --dtype bf16 --compile \
   --out $R/jepa/s1_bench.json
 ```
 
-- **教师侧：** 报告每个 batch 64 的前向耗时中位数和 p90、峰值显存；同时测 `torch.compile` 前后的差别。
-- **数据侧：** V2 每个样本多出 6 帧 PNG，测 8 个 worker 时每秒能解码多少样本，判断会不会让训练的数据加载跟不上。参照：训练全局约 76 样本/秒，每张卡 8 个 worker。
-- **换算：** 按 3.36 s/step、micro batch 64 计算每种变体会让 StepTime 增加多少。
+- **教师侧：** 报告每个 batch 64 的前向耗时中位数和 p90、峰值显存；加 `--compile` 时同时测 `torch.compile` 之后的耗时（编译失败只记录错误，不影响其余结果）。计时包含缩放和归一化，与训练时一致。
+- **数据侧：** 测单进程解码并缩放一张 PNG 的耗时。V2 每个样本多出 5 帧，据此算出这些额外解码占每张卡 8 个 worker 的比例，判断数据加载会不会跟不上。参照：训练全局约 76 样本/秒。
+- **换算：** 按 3.36 s/step、micro batch 64 计算 StepTime 的增加。基线已经包含 DINO-Video，所以分两种：替换（A2）增加的是与 V0 的差值；两者都要（A3）增加的是完整的前向耗时。
 
 ### 步骤 5：训练探针（夜间 4 张 GPU 并行，或白天用 CPU 跑线性探针和 P3）
 
@@ -323,9 +328,13 @@ CUDA_VISIBLE_DEVICES=1 python -m research.jepa_probe.bench_teacher \
 python -m research.jepa_probe.train_probe --sweep research/jepa_probe/configs/sweep_main.yaml \
   --features $P/features --index $P/index --out $P/results --gpus 0,1,2,3
 # 线性探针与 P3（闭式解，CPU 或 GPU 都可以）
-python -m research.jepa_probe.ridge_probe --variants V0,V1,V1i,V1m,V2,V3,V3h \
+python -m research.jepa_probe.ridge_probe --variants V0,B-pixel,V1,V1i,V1m,V2,V3,V3h \
   --features $P/features --index $P/index --out $P/results/ridge
 ```
+
+- 没有提完特征的输入会被跳过并打印提示，所以 V3/V3h 暂时缺席也能先跑其余部分。
+- 已有结果文件的运行会跳过，中断后重跑同一条命令即可续上。每张卡的日志在 `$P/results/_jobs/`。
+- P4 在主 sweep 跑完后自动进行：按 P1s 验证集 nMSE 选出最好的两个 JEPA 变体，与 V0 拼接后再训练。
 
 **`sweep_main.yaml` 的内容：**
 - 任务：P1、P1s、P1Δ、P2；
@@ -342,8 +351,10 @@ python -m research.jepa_probe.ridge_probe --variants V0,V1,V1i,V1m,V2,V3,V3h \
 
 ```bash
 python -m research.jepa_probe.report --results $P/results --bench $R/jepa/s1_bench.json \
-  --features $P/features --out $R/jepa/stage1_report.md
+  --features $P/features --index $P/index --out $R/jepa/stage1_report.md
 ```
+
+PCA 图写在报告旁边的 `stage1_report_viz/` 目录里。
 
 报告内容：
 1. **主表：** 每种输入在 P1s、P1、P1Δ、P2 上的测试 nMSE（均值 ± 标准差），以及相对 V0 的变化和 95% 置信区间。

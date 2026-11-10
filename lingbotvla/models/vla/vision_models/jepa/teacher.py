@@ -121,7 +121,6 @@ class ToyEncoder(nn.Module):
         self.embed = nn.Conv3d(3, embed_dim, kernel_size=(TUBELET, PATCH, PATCH),
                                stride=(TUBELET, PATCH, PATCH))
 
-    def forward(self, video: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
-        del interpolate_pos_encoding
+    def forward(self, video: torch.Tensor) -> torch.Tensor:
         tokens = self.embed(video)  # [B, dim, T/2, H/16, W/16]
         return tokens.flatten(2).transpose(1, 2).contiguous()

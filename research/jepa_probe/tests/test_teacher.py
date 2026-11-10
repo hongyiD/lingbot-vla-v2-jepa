@@ -7,11 +7,9 @@ import pytest
 
 try:
     import torch
-    from lingbotvla.models.vla.vision_models.jepa.teacher import ToyEncoder, VJepaTeacher
+    from lingbotvla.models.vla.vision_models.jepa.teacher import EMBED_DIM, ToyEncoder, VJepaTeacher
 except Exception as exc:  # the dev machine's torch/numpy is broken; the pod image is fine
     pytest.skip(f"teacher tests need a working torch: {exc}", allow_module_level=True)
-
-from research.jepa_probe.common import EMBED_DIM  # noqa: E402
 
 
 def _teacher() -> VJepaTeacher:

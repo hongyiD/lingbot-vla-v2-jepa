@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import bisect
 import io
+from collections import OrderedDict
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -32,9 +33,11 @@ class FrameReader:
     struct: {"bytes": <png bytes>, "path": ...}.
     """
 
-    def __init__(self, dataset_dir: Path, camera: str = TOP_CAMERA):
+    def __init__(self, dataset_dir: Path, camera: str = TOP_CAMERA, cache_groups: int = 2):
         self.dataset_dir = Path(dataset_dir)
         self.camera = camera
+        self._cache: OrderedDict[int, object] = OrderedDict()
+        self._cache_groups = cache_groups
         files = sorted((self.dataset_dir / "data").glob("chunk-*/*.parquet"))
         if not files:
             raise FileNotFoundError(f"no data files under {self.dataset_dir / 'data'}")
@@ -50,21 +53,35 @@ class FrameReader:
                 total += rows
         self.num_rows = total
 
-    def images(self, dataset_rows: list[int]) -> list[Image.Image]:
-        """PIL images in the order of `dataset_rows`."""
+    def raw(self, dataset_rows: list[int]) -> list[bytes]:
+        """Encoded image bytes in the order of `dataset_rows`."""
         wanted: dict[int, list[tuple[int, int]]] = {}
         for position, row in enumerate(dataset_rows):
             if not 0 <= row < self.num_rows:
                 raise IndexError(f"row {row} outside {self.dataset_dir} ({self.num_rows} rows)")
             group = bisect.bisect_right(self._starts, row) - 1
             wanted.setdefault(group, []).append((position, row - self._starts[group]))
-        out: list[Image.Image | None] = [None] * len(dataset_rows)
+        out: list[bytes | None] = [None] * len(dataset_rows)
         for group, requests in wanted.items():
-            path, group_in_file, _ = self._groups[group]
-            column = pq.ParquetFile(path).read_row_group(group_in_file, columns=[self.camera]).column(0)
+            column = self._column(group)
             for position, offset in requests:
-                out[position] = _decode(column[offset].as_py(), self.camera, dataset_rows[position])
+                out[position] = _payload(column[offset].as_py(), self.camera, dataset_rows[position])
         return out
+
+    def images(self, dataset_rows: list[int]) -> list[Image.Image]:
+        """PIL images in the order of `dataset_rows`."""
+        return [decode_png(payload) for payload in self.raw(dataset_rows)]
+
+    def _column(self, group: int):
+        if group in self._cache:
+            self._cache.move_to_end(group)
+            return self._cache[group]
+        path, group_in_file, _ = self._groups[group]
+        column = pq.ParquetFile(path).read_row_group(group_in_file, columns=[self.camera]).column(0)
+        self._cache[group] = column
+        while len(self._cache) > self._cache_groups:
+            self._cache.popitem(last=False)
+        return column
 
     def load(self, dataset_rows: list[int]):
         """uint8 frames at 224, shape [N, 3, 224, 224], in the order of `dataset_rows`."""
@@ -73,10 +90,14 @@ class FrameReader:
         return torch.stack([resize_224(image) for image in self.images(dataset_rows)])
 
 
-def _decode(cell, camera: str, row: int) -> Image.Image:
+def _payload(cell, camera: str, row: int) -> bytes:
     payload = cell["bytes"] if isinstance(cell, dict) else cell
     if not isinstance(payload, (bytes, bytearray)):
         raise TypeError(f"{camera} row {row}: expected image bytes, got {type(payload).__name__}")
+    return payload
+
+
+def decode_png(payload: bytes) -> Image.Image:
     return Image.open(io.BytesIO(payload)).convert("RGB")
 
 
@@ -102,6 +123,6 @@ def to_teacher_input(frames, input_size: int):
     values = frames.float() / 255.0
     if values.shape[-2:] != (input_size, input_size):
         values = F.interpolate(values, size=(input_size, input_size), mode="bilinear", align_corners=False)
-    mean = torch.tensor(IMAGENET_MEAN, dtype=values.dtype).view(1, 3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, dtype=values.dtype).view(1, 3, 1, 1)
+    mean = torch.tensor(IMAGENET_MEAN, dtype=values.dtype, device=values.device).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, dtype=values.dtype, device=values.device).view(1, 3, 1, 1)
     return (values - mean) / std

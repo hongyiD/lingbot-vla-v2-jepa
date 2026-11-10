@@ -1,6 +1,6 @@
-# Teacher variants for the Stage 1 probes. All of them produce 16x16 tokens of 1024 dims per frame,
-# the same shape as the DINO-Video target. Weights and the vjepa2 source snapshot live on the PVC
-# ($D/weights/vjepa); only paths relative to that directory are written here.
+# Teacher variants for the Stage 1 probes. All teachers produce 16x16 tokens of 1024 dims per frame,
+# the same shape as the DINO-Video target. ${VAR} is expanded from the environment (pod.env sets D
+# and W); relative `weights` / `source` paths are resolved against weights_dir.
 #
 # clip frames are positions within the chunk: 0 is the current frame, 49 is the training future
 # frame. A repeated position keeps the first tubelet free of future frames.
@@ -10,10 +10,24 @@ weights_dir: ${D}/weights/vjepa
 variants:
   V0:  # DINO-Video, the training baseline, through get_video_target
     teacher: dino_video
-    input_size: 256
-    clip_frames: [0, 0, 49]
-    current_index: 1
-    layer: last
+    clip_frames: [0, 49]  # get_video_target builds [f_t, f_t, f_t+49] itself (use_warmup_frame)
+    video:  # align_params.video of configs/vla/robotwin/robotwin.yaml, the keys get_video_target reads
+      ckpt_path: ${W}/lingbot-vla-v2-6b/dino_video/teacher_step_10000.pth
+      config_path: ${W}/lingbot-vla-v2-6b/dino_video/config.yaml
+      attention_mode: flex_block_causal
+      input_size: 256
+      num_future_frames: 1
+      use_warmup_frame: true
+      effective_fps: 1.0
+      n_blocks: 1
+      cls_pool: last
+      use_patch_loss: true
+      use_current_patch_loss: true
+      use_cls_loss: false
+
+  B-pixel:  # baseline: both frames shrunk to 16x16 RGB
+    teacher: pixel
+    clip_frames: [0, 49]
 
   V1:  # V-JEPA 2 ViT-L, current and future frames in one clip
     teacher: hf_vjepa2

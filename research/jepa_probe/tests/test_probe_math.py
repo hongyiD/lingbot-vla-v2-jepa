@@ -99,7 +99,7 @@ def test_gap_flags_significance():
 
 
 def test_summarize_runs():
-    runs = [{"test_nmse": 0.4}, {"test_nmse": 0.6}]
+    runs = [{"test": {"nmse": 0.4}}, {"test": {"nmse": 0.6}}]
     summary = summarize_runs(runs)
     assert summary == {"mean": 0.5, "std": np.std([0.4, 0.6], ddof=1), "seeds": 2}
 

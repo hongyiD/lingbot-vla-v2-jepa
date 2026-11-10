@@ -9,9 +9,6 @@ from pathlib import Path
 
 import numpy as np
 
-# LeRobot v3.0 on-disk layout (lerobot 0.4.2).
-DATA_PATH = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
-EPISODES_PATH = "meta/episodes/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 TOP_CAMERA = "observation.images.cam_high"  # LingBot's `camera_top`
 STATE_KEY = "observation.state"
 ACTION_KEY = "action"
@@ -19,7 +16,6 @@ STATE_DIM = 14
 ACTION_DIM = 14
 
 # Matches configs/vla/robotwin/robotwin.yaml: arm/effector use bounds_99_woclip.
-NORM_TYPE = "bounds_99_woclip"
 NORM_KEYS = ("action.arm.position", "action.effector.position",
              "observation.state.arm.position", "observation.state.effector.position")
 # Layout of the 14-dim vectors: left arm (6), left gripper (1), right arm (6), right gripper (1).
@@ -34,15 +30,8 @@ GRIPPER_EVENT_SPAN = 0.5
 SPLIT_NAMES = ("train", "val", "test")
 DEFAULT_SPLIT = "train=0-34,val=35-39,test=40-49"
 
-IMAGE_SIZE = (224, 224)          # LingBot's dataset image_transforms=Resize(image_size)
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
-
-# V-JEPA patch geometry. Duplicated in the teacher module, which cannot import this package
-# without pulling in lingbotvla's torch-only model registry.
-TUBELET = 2
-PATCH = 16
-EMBED_DIM = 1024
 
 
 def read_json(path: str | Path) -> dict:
@@ -123,3 +112,57 @@ def gripper_event(normalized_chunk: np.ndarray, span: float = GRIPPER_EVENT_SPAN
         if float(column.max() - column.min()) > span:
             return True
     return False
+
+
+def load_index(index_dir: str | Path) -> dict[str, np.ndarray]:
+    """Columns of index.parquet as numpy arrays, plus `episode_key` ('task/episode')."""
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(Path(index_dir) / "index.parquet").to_pydict()
+    index = {name: np.asarray(values) for name, values in table.items()}
+    if not np.array_equal(index["sample_id"], np.arange(len(index["sample_id"]))):
+        raise ValueError(f"{index_dir}: sample_id is not 0..N-1 in file order")
+    index["episode_key"] = np.char.add(np.char.add(index["task"].astype(str), "/"),
+                                       index["episode_index"].astype(str))
+    return index
+
+
+def split_ids(index: dict[str, np.ndarray], name: str) -> np.ndarray:
+    return np.flatnonzero(index["split"] == name)
+
+
+def nmse(prediction: np.ndarray, target: np.ndarray) -> float:
+    """MSE divided by the target variance: 0 is perfect, 1 matches predicting the mean."""
+    var = np.mean(np.square(target - target.mean(axis=0)))
+    return float(np.mean(np.square(prediction - target)) / max(var, 1e-12))
+
+
+def gripper_columns(width: int) -> np.ndarray:
+    """Columns of a flattened [steps * 14] target that hold a gripper value."""
+    return np.isin(np.arange(width) % STATE_DIM, (GRIPPER_SLICES[0].start, GRIPPER_SLICES[1].start))
+
+
+def prediction_metrics(prediction: np.ndarray, target: np.ndarray, *, episode_keys: np.ndarray,
+                       events: np.ndarray) -> dict:
+    """nMSE overall, on arm and gripper columns, on the gripper-event subset, and per episode.
+
+    The event subset and the per-episode values divide by the variance of the whole evaluated
+    split, so they stay comparable across inputs and can be averaged.
+    """
+    prediction = np.asarray(prediction, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    variance = max(float(np.mean(np.square(target - target.mean(axis=0)))), 1e-12)
+    squared = np.square(prediction - target)
+    grip = gripper_columns(target.shape[1])
+    metrics = {
+        "nmse": float(squared.mean() / variance),
+        "nmse_arm": nmse(prediction[:, ~grip], target[:, ~grip]),
+        "nmse_gripper": nmse(prediction[:, grip], target[:, grip]) if grip.any() else None,
+        "n": int(len(target)),
+        "n_event": int(events.sum()),
+        "nmse_event": float(squared[events].mean() / variance) if events.any() else None,
+    }
+    per_sample = squared.mean(axis=1) / variance
+    metrics["per_episode"] = {str(key): float(per_sample[episode_keys == key].mean())
+                              for key in np.unique(episode_keys)}
+    return metrics
