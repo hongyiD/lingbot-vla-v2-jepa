@@ -1,0 +1,28 @@
+# Local-only reference material (internal platform docs, third-party repos, local venv)
+embodiedx/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Weights, features and run outputs live on the PVC, never in git
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.npz
+*.npy
+outputs/
+runs/
+wandb/
+*.tar.gz
