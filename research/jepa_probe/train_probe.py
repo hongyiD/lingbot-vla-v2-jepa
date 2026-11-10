@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.features / "stats.npz").is_file():
         raise SystemExit(f"no features at {args.features}; run extract_features first")
     print(f"probe {args.task} on {args.variant}: seeds {args.seeds}, lrs {args.lrs}, device {args.device}")
-    return 0
+    raise SystemExit("train_probe: the training driver is not implemented yet")
 
 
 if __name__ == "__main__":

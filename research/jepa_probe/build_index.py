@@ -112,11 +112,10 @@ def index_dataset(dataset_dir: Path, *, stride: int, future_offset: int, chunk: 
         if not np.array_equal(columns["frame_index"][rows], np.arange(end - start)):
             raise ValueError(f"{dataset_dir.name} ep {episode_index}: frame_index is not 0..length-1")
         length = end - start
-        for t in range(0, length - future_offset, stride):
+        horizon = max(future_offset + 1, chunk)
+        for t in range(0, length - horizon + 1, stride):
             row_t = int(rows[t])
             action_raw = columns[ACTION_KEY][row_t:row_t + chunk]
-            if len(action_raw) != chunk:
-                raise ValueError(f"{dataset_dir.name} ep {episode_index} t={t}: action chunk runs past the episode")
             action = np.stack([normalize_vector(step, "action", norm) for step in action_raw])
             samples.append({
                 "task": task_name(dataset_dir),
@@ -128,7 +127,7 @@ def index_dataset(dataset_dir: Path, *, stride: int, future_offset: int, chunk: 
                 "rows_v2": json.dumps(clip_rows(rows, t, future_offset)),
                 "split": split,
                 "fps": fps,
-                "gripper_event": bool(gripper_event(action_raw)),
+                "gripper_event": bool(gripper_event(action)),
             })
             labels["state_t"].append(normalize_vector(columns[STATE_KEY][row_t], "observation.state", norm))
             labels["state_t49"].append(normalize_vector(columns[STATE_KEY][rows[t + future_offset]],

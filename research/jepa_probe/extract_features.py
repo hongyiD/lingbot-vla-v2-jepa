@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -23,12 +24,19 @@ POOLED_TOKENS = 64  # 8 x 8
 
 
 def load_variant(config_path: Path, name: str) -> dict:
+    """One variant with `weights` and `source` resolved against the expanded `weights_dir`."""
     import yaml
-    variants = yaml.safe_load(config_path.read_text(encoding="utf-8"))["variants"]
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    variants = config["variants"]
     if name not in variants:
         raise KeyError(f"variant {name!r} not in {config_path}; have {sorted(variants)}")
-    variant = variants[name]
-    variant["name"] = name
+    weights_dir = os.path.expandvars(str(config.get("weights_dir", "")))
+    if "$" in weights_dir:
+        raise ValueError(f"weights_dir {config.get('weights_dir')!r} has unset variables; export D first")
+    variant = dict(variants[name], name=name)
+    for key in ("weights", "source"):
+        if key in variant:
+            variant[key] = str(Path(weights_dir) / variant[key])
     return variant
 
 
@@ -122,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     remaining = pending_samples(args.out, index_meta["samples"])
     print(f"{args.variant}: {index_meta['samples'] - len(remaining)} done, {len(remaining)} to extract")
     if remaining:
-        print("feature extraction runs on the GPU pod; this skeleton records the plan and exits here.")
+        raise SystemExit("extract_features: the extraction loop is not implemented yet")
     return 0
 
 

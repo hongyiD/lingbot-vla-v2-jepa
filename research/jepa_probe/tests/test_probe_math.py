@@ -45,6 +45,44 @@ def test_p3_delta_is_zero_without_signal():
     assert abs(scores["delta"]) < 0.5  # no relationship, so the action adds nothing stable
 
 
+def test_p3_delta_detects_action_signal():
+    rng = np.random.default_rng(2)
+    n = 300
+    current = rng.normal(size=(n, 64, 4)).astype(np.float32)
+    action = rng.normal(size=(n, 5, 2)).astype(np.float32)
+    # Every future token is the matching current token plus a shift driven by the action.
+    shift = action.reshape(n, -1) @ rng.normal(size=(10, 4)).astype(np.float32)
+    future = current + shift[:, None, :]
+    ids = np.arange(200), np.arange(200, 250), np.arange(250, n)
+    scores = p3_scores(current, future, action, train_ids=ids[0], val_ids=ids[1], test_ids=ids[2],
+                       dims=8, input_dims=64)
+    assert scores["cur_act"] > 0.95 and scores["delta"] > 0.3
+
+
+def test_randomized_pca_matches_full_svd():
+    from research.jepa_probe.ridge_probe import pca_project
+
+    rng = np.random.default_rng(3)
+    data = rng.normal(size=(120, 40)) * np.linspace(5.0, 0.1, 40)
+    (fast,) = pca_project(data, [], dims=6)
+    centered = data - data.mean(axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    exact = centered @ vt[:6].T
+    assert np.allclose(np.abs(fast), np.abs(exact), atol=1e-3)  # components agree up to sign
+
+
+def test_load_variant_expands_weights_dir(tmp_path, monkeypatch):
+    from research.jepa_probe.extract_features import load_variant
+
+    config = tmp_path / "variants.yaml"
+    config.write_text("weights_dir: ${D}/weights/vjepa\nvariants:\n  V1:\n    weights: vitl\n", encoding="utf-8")
+    monkeypatch.setenv("D", "/mnt/work")
+    assert load_variant(config, "V1")["weights"] == "/mnt/work/weights/vjepa/vitl"
+    monkeypatch.delenv("D")
+    with pytest.raises(ValueError):
+        load_variant(config, "V1")
+
+
 def test_bootstrap_interval_contains_mean():
     differences = np.array([0.1, -0.2, 0.3, 0.05])
     low, high = paired_bootstrap(differences, n_resamples=2000, seed=0)

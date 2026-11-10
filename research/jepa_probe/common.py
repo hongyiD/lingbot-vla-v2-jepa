@@ -23,8 +23,13 @@ NORM_TYPE = "bounds_99_woclip"
 NORM_KEYS = ("action.arm.position", "action.effector.position",
              "observation.state.arm.position", "observation.state.effector.position")
 # Layout of the 14-dim vectors: left arm (6), left gripper (1), right arm (6), right gripper (1).
+# The robot config concatenates the arms into a 12-dim `arm.position` feature and the grippers into
+# a 2-dim `effector.position` feature, and the norm stats follow that concatenated order.
 ARM_SLICES = (slice(0, 6), slice(7, 13))
 GRIPPER_SLICES = (slice(6, 7), slice(13, 14))
+# A gripper counts as moving inside a chunk when its normalized value spans more than this.
+# Fully open to fully closed is about 2 in normalized units.
+GRIPPER_EVENT_SPAN = 0.5
 
 SPLIT_NAMES = ("train", "val", "test")
 DEFAULT_SPLIT = "train=0-34,val=35-39,test=40-49"
@@ -87,8 +92,8 @@ def load_norm(norm_stats_path: str | Path) -> dict[str, dict[str, np.ndarray]]:
 def normalize_vector(raw: np.ndarray, kind: str, norm: dict) -> np.ndarray:
     """Normalize one 14-dim state or action vector the way LingBot does.
 
-    `kind` is 'action' or 'observation.state'. Stats longer than the vector are truncated,
-    matching Normalizer._get_stat.
+    `kind` is 'action' or 'observation.state'. The output keeps the raw 14-dim layout; each
+    dimension uses the stat at its position in the concatenated feature (left part first).
     """
     raw = np.asarray(raw, dtype=np.float64)
     if raw.shape != (STATE_DIM,):
@@ -97,19 +102,24 @@ def normalize_vector(raw: np.ndarray, kind: str, norm: dict) -> np.ndarray:
     for part, slices in (("arm.position", ARM_SLICES), ("effector.position", GRIPPER_SLICES)):
         entry = norm[f"{kind}.{part}"]
         low, high = entry["q01"], entry["q99"]
-        width = slices[0].stop - slices[0].start
-        if low.shape[0] < width:
-            raise ValueError(f"norm stats for {kind}.{part} are shorter than {width}")
-        low, high = low[:width], high[:width]
+        needed = sum(sl.stop - sl.start for sl in slices)
+        if low.ndim != 1 or low.shape[0] != needed:
+            raise ValueError(f"norm stats for {kind}.{part} have shape {low.shape}, expected ({needed},)")
+        offset = 0
         for sl in slices:
-            out[sl] = normalize_bounds(raw[sl], low, high)
+            width = sl.stop - sl.start
+            out[sl] = normalize_bounds(raw[sl], low[offset:offset + width], high[offset:offset + width])
+            offset += width
     return out.astype(np.float32)
 
 
-def gripper_event(action_chunk: np.ndarray) -> bool:
-    """True when either gripper's open/close state changes inside the action chunk."""
+def gripper_event(normalized_chunk: np.ndarray, span: float = GRIPPER_EVENT_SPAN) -> bool:
+    """True when either gripper moves by more than `span` (normalized units) inside the chunk.
+
+    A threshold rather than exact equality: gripper commands are continuous and jitter slightly.
+    """
     for sl in GRIPPER_SLICES:
-        column = action_chunk[:, sl]
-        if np.any(column != column[0]):
+        column = normalized_chunk[:, sl]
+        if float(column.max() - column.min()) > span:
             return True
     return False

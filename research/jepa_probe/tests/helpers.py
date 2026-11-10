@@ -81,10 +81,18 @@ def _write_chunks(directory: Path, rows, include_images: bool) -> None:
         pq.write_table(table, chunk / f"file-{file_index:03d}.parquet")
 
 
+LEFT_BOUNDS = (0.0, 1.0)
+RIGHT_BOUNDS = (-1.0, 3.0)
+
+
 def write_norm_stats(path: Path) -> None:
-    """q01/q99 chosen so the fixture vectors land inside (-2, 2) after normalization."""
-    entry = {"mean": [0] * 6, "std": [1] * 6, "q01": [0] * 6, "q99": [1] * 6}
-    gripper = {"mean": [0], "std": [1], "q01": [0], "q99": [1]}
+    """Layout of the real file: arm stats are 12-dim (left 6, right 6), gripper stats 2-dim.
+
+    Left and right use different bounds so a mix-up between the two shows up in the labels.
+    """
+    (l_low, l_high), (r_low, r_high) = LEFT_BOUNDS, RIGHT_BOUNDS
+    entry = {"mean": [0] * 12, "std": [1] * 12, "q01": [l_low] * 6 + [r_low] * 6, "q99": [l_high] * 6 + [r_high] * 6}
+    gripper = {"mean": [0, 0], "std": [1, 1], "q01": [l_low, r_low], "q99": [l_high, r_high]}
     stats = {}
     for kind in ("action", "observation.state"):
         stats[f"{kind}.arm.position"] = entry

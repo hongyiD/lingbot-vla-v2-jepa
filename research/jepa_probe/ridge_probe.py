@@ -46,28 +46,56 @@ def select_penalty(train_x, train_y, val_x, val_y) -> float:
     return best_penalty
 
 
-def pca_project(train: np.ndarray, others: list[np.ndarray], dims: int) -> list[np.ndarray]:
-    """Project every array with the PCA basis of `train`. All arrays share the column count."""
+def pca_project(train: np.ndarray, others: list[np.ndarray], dims: int, *,
+                oversample: int = 32, power_iters: int = 4, seed: int = 0) -> list[np.ndarray]:
+    """Project every array with the top-`dims` PCA basis of `train`. All arrays share the column count.
+
+    Randomized SVD (Halko et al.): a full SVD of a 30k x 16k matrix is far too slow on a CPU.
+    """
     center = train.mean(axis=0)
-    _, _, basis = np.linalg.svd(train - center, full_matrices=False)
-    basis = basis[:dims].T
-    return [(array - center) @ basis for array in [train, *others]]
+    centered = (train - center).astype(np.float32)
+    dims = min(dims, *centered.shape)
+    width = min(dims + oversample, *centered.shape)
+    rng = np.random.default_rng(seed)
+    basis, _ = np.linalg.qr(centered @ rng.standard_normal((centered.shape[1], width)).astype(np.float32))
+    for _ in range(power_iters):
+        basis, _ = np.linalg.qr(centered @ (centered.T @ basis))
+    _, _, components = np.linalg.svd(basis.T @ centered, full_matrices=False)
+    components = components[:dims].T
+    return [(array - center).astype(np.float32) @ components for array in [train, *others]]
+
+
+def pool_grid(tokens: np.ndarray, grid: int = 8, pool: int = 2) -> np.ndarray:
+    """[N, grid*grid, C] -> [N, (grid/pool)**2 * C] by averaging non-overlapping pool x pool patches."""
+    n, _, channels = tokens.shape
+    grouped = tokens.astype(np.float32).reshape(n, grid // pool, pool, grid // pool, pool, channels)
+    return grouped.mean(axis=(2, 4)).reshape(n, -1)
 
 
 def p3_scores(current: np.ndarray, future: np.ndarray, action: np.ndarray, *,
-              train_ids: np.ndarray, val_ids: np.ndarray, test_ids: np.ndarray, dims: int = 256) -> dict:
-    """R^2 of the future tokens from the current tokens, with and without the action chunk."""
-    pooled_future = future.reshape(len(future), 8, 8, -1)[:, ::2, ::2, :].reshape(len(future), -1)
-    pooled_current = current.reshape(len(current), -1)
+              train_ids: np.ndarray, val_ids: np.ndarray, test_ids: np.ndarray,
+              dims: int = 256, input_dims: int = 512) -> dict:
+    """R^2 of the future tokens from the current tokens, with and without the action chunk.
+
+    Both token sets are pooled to 4x4 and PCA-projected on the train split (future to `dims`,
+    current to `input_dims`); a ridge on the raw 64 x 1024 inputs would need a 65k x 65k Gram matrix.
+    """
     future_train, future_val, future_test = pca_project(
-        pooled_future[train_ids], [pooled_future[val_ids], pooled_future[test_ids]], dims)
+        pool_grid(future[train_ids]), [pool_grid(future[val_ids]), pool_grid(future[test_ids])], dims)
+    current_parts = pca_project(
+        pool_grid(current[train_ids]), [pool_grid(current[val_ids]), pool_grid(current[test_ids])], input_dims)
+    current_by_split = dict(zip(("train", "val", "test"), current_parts))
+    ids_by_split = {"train": train_ids, "val": val_ids, "test": test_ids}
     scores = {}
     for name, extra in (("cur", None), ("cur_act", action)):
-        def take(ids, values=extra):
-            base = pooled_current[ids]
-            return base if values is None else np.concatenate([base, values[ids].reshape(len(ids), -1)], axis=1)
-        penalty = select_penalty(take(train_ids), future_train, take(val_ids), future_val)
-        scores[name] = r2(predict(take(test_ids), fit_ridge(take(train_ids), future_train, penalty)), future_test)
+        def take(split, values=extra):
+            base = current_by_split[split]
+            if values is None:
+                return base
+            ids = ids_by_split[split]
+            return np.concatenate([base, values[ids].reshape(len(ids), -1)], axis=1)
+        penalty = select_penalty(take("train"), future_train, take("val"), future_val)
+        scores[name] = r2(predict(take("test"), fit_ridge(take("train"), future_train, penalty)), future_test)
     scores["delta"] = scores["cur_act"] - scores["cur"]
     return scores
 
@@ -80,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     print(f"ridge probes for {args.variants}: features {args.features}, out {args.out}")
-    return 0
+    raise SystemExit("ridge_probe: the driver is not implemented yet")
 
 
 if __name__ == "__main__":

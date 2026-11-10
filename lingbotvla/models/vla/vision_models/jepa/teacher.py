@@ -25,16 +25,13 @@ EMBED_DIM = 1024
 
 
 class VJepaTeacher(nn.Module):
-    def __init__(self, encoder: nn.Module, backend: str, embed_dim: int = EMBED_DIM,
-                 interpolate_pos_encoding: bool = False):
+    def __init__(self, encoder: nn.Module, backend: str, embed_dim: int = EMBED_DIM):
         super().__init__()
         if backend not in ("hf_vjepa2", "vjepa2_1"):
             raise ValueError(f"unknown backend {backend!r}")
         self.encoder = encoder
         self.backend = backend
         self.embed_dim = embed_dim
-        # V-JEPA 2.1 was trained at 384 and is run here at 256, so its position encoding must adapt.
-        self.interpolate_pos_encoding = interpolate_pos_encoding
         self.encoder.eval()
         for parameter in self.encoder.parameters():
             parameter.requires_grad_(False)
@@ -48,11 +45,13 @@ class VJepaTeacher(nn.Module):
 
     @classmethod
     def from_vjepa2_1(cls, source_dir: str | Path, weights: str | Path, *,
-                      img_size: int = 384) -> "VJepaTeacher":
+                      img_size: int = 384, checkpoint_key: str = "ema_encoder") -> "VJepaTeacher":
         """Build the official ViT-L encoder and load the `ema_encoder` weights.
 
         `source_dir` is the unpacked facebookresearch/vjepa2 snapshot; its hub loader points at
-        localhost in the pinned revision, so weights are loaded from `weights` instead.
+        localhost in the pinned revision, so weights are loaded from `weights` instead. `weights`
+        may be the full training checkpoint or an already extracted encoder state dict. The encoder
+        uses RoPE with interpolate_rope=True, so 256 px inputs need no position-encoding change.
         """
         import sys
 
@@ -64,8 +63,10 @@ class VJepaTeacher(nn.Module):
             use_sdpa=True, use_SiLU=False, wide_SiLU=True, uniform_power=False, use_rope=True,
             img_temporal_dim_size=1, interpolate_rope=True)
         state = torch.load(str(weights), map_location="cpu", weights_only=True)
+        if checkpoint_key in state:
+            state = state[checkpoint_key]
         encoder.load_state_dict(_strip_prefix(state), strict=True)
-        return cls(encoder, backend="vjepa2_1", interpolate_pos_encoding=True)
+        return cls(encoder, backend="vjepa2_1")
 
     @torch.no_grad()
     def get_future_feature(self, video: torch.Tensor, return_cls: bool = False,
@@ -96,21 +97,20 @@ class VJepaTeacher(nn.Module):
                                    skip_predictor=True, output_hidden_states=hidden_layer is not None)
             if hidden_layer is None:
                 return outputs.last_hidden_state
-            return outputs.hidden_states[hidden_layer]
-        outputs = self.encoder(video, interpolate_pos_encoding=self.interpolate_pos_encoding)
+            # Pre-norm residual stream; a parameter-free LayerNorm puts it on the final output's scale.
+            hidden = outputs.hidden_states[hidden_layer]
+            return nn.functional.layer_norm(hidden, hidden.shape[-1:])
+        if hidden_layer is not None:
+            raise NotImplementedError("hidden_layer is only supported for the hf_vjepa2 backend")
+        outputs = self.encoder(video)
         if isinstance(outputs, (tuple, list)):
             outputs = outputs[0]
         return outputs
 
 
 def _strip_prefix(state: dict) -> dict:
-    cleaned = {}
-    for key, value in state.items():
-        for prefix in ("module.", "backbone."):
-            if key.startswith(prefix):
-                key = key[len(prefix):]
-        cleaned[key] = value
-    return cleaned
+    """Same cleanup as the official hub loader (src/hub/backbones.py::_clean_backbone_key)."""
+    return {key.replace("module.", "").replace("backbone.", ""): value for key, value in state.items()}
 
 
 class ToyEncoder(nn.Module):

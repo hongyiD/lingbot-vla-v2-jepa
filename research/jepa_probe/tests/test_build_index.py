@@ -5,8 +5,9 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from research.jepa_probe.build_index import build
-from research.jepa_probe.common import normalize_vector
-from research.jepa_probe.tests.helpers import write_dataset, write_norm_stats, write_robot_config
+from research.jepa_probe.common import gripper_event, normalize_vector
+from research.jepa_probe.tests.helpers import (LEFT_BOUNDS, RIGHT_BOUNDS, write_dataset, write_norm_stats,
+                                               write_robot_config)
 
 EPISODES = [8, 7, 9, 6]  # episode 1 (length 7) cannot hold a chunk of 5 past offset 4
 OFFSET = 4
@@ -85,14 +86,36 @@ def test_labels_match_training_normalization(tmp_path):
     assert far.max() > 1
 
 
-def test_gripper_event_and_v2_rows(tmp_path):
+def test_right_side_uses_right_stats(tmp_path):
+    from research.jepa_probe.common import load_norm
+    norm_stats = tmp_path / "norm.json"
+    write_norm_stats(norm_stats)
+    norm = load_norm(norm_stats)
+    (l_low, l_high), (r_low, r_high) = LEFT_BOUNDS, RIGHT_BOUNDS
+    raw = np.full(14, 1.0)
+    out = normalize_vector(raw, "action", norm)
+    left = (1.0 - l_low) / (l_high - l_low + 1e-6) * 2 - 1
+    right = (1.0 - r_low) / (r_high - r_low + 1e-6) * 2 - 1
+    assert np.allclose(out[0:7], left, atol=1e-5)    # left arm and left gripper
+    assert np.allclose(out[7:14], right, atol=1e-5)  # right arm and right gripper
+
+
+def test_gripper_event_threshold():
+    chunk = np.zeros((50, 14), dtype=np.float32)
+    chunk[:, 6] = 0.9 + 0.01 * np.sin(np.arange(50))  # left gripper jitters while held
+    assert not gripper_event(chunk)
+    chunk[25:, 13] = -1.0  # right gripper closes halfway through
+    chunk[:25, 13] = 1.0
+    assert gripper_event(chunk)
+
+
+def test_gripper_event_column_and_v2_rows(tmp_path):
     train_list, robot_config, norm_stats = _setup(tmp_path)
     out = tmp_path / "index"
     build(train_list, robot_config, norm_stats, out, stride=STRIDE, future_offset=OFFSET,
           chunk=CHUNK, split_spec="train=0-3,val=0-0,test=0-0")
     table = pq.read_table(out / "index.parquet").to_pylist()
-    # The fixture gripper value changes with every frame, so each chunk contains an event.
-    assert all(row["gripper_event"] for row in table)
+    assert all(isinstance(row["gripper_event"], bool) for row in table)
     import json
     row = table[0]
     rows = json.loads(row["rows_v2"])

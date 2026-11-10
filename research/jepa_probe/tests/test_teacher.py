@@ -38,7 +38,7 @@ def test_current_index_selects_the_frame():
 
 def test_rejects_bad_shapes():
     teacher = _teacher()
-    for shape in ((2, 256, 256), (1, 3, 3, 256, 256), (1, 3, 2, 224, 224)):
+    for shape in ((2, 256, 256), (1, 3, 3, 256, 256), (1, 3, 2, 250, 250)):
         with pytest.raises(ValueError):
             teacher.get_future_feature(torch.randn(*shape))
 

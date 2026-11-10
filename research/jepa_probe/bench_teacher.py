@@ -10,7 +10,6 @@ against the measured training baseline of 3.36 s/step at micro batch 64.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
@@ -60,12 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not torch.cuda.is_available():
         raise SystemExit("bench_teacher needs a GPU; run it on the pod.")
-    result = {"variants": args.variants.split(","), "batch": args.batch, "dtype": args.dtype,
-              "baseline_step_s": BASELINE_STEP_SECONDS}
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    print(f"benchmark plan for {result['variants']} written to {args.out}")
-    return 0
+    raise SystemExit("bench_teacher: the benchmark driver is not implemented yet")
 
 
 if __name__ == "__main__":
