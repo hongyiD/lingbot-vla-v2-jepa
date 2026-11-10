@@ -85,7 +85,7 @@
 | **V1** | V-JEPA 2 ViT-L（HF） | 256 | `[f_t, f_t, f_{t+49}, f_{t+49}]`，2 个 tubelet，一次前向 | tubelet 0 | tubelet 1 | `last_hidden_state`（含最终 LayerNorm） |
 | **V1i** | 同上 | 256 | 当前与未来**分别**前向：`[f_t, f_t]`、`[f_{t+49}, f_{t+49}]` | 单独前向的结果 | 单独前向的结果 | 同上 |
 | **V1m** | 同上 | 256 | 与 V1 同一次前向 | tubelet 0 | tubelet 1 | 第 16 层（共 24 层）hidden state，再做不带仿射参数的 LayerNorm |
-| **V2** | 同上 | 256 | 8 帧：`[f_t, f_t, f_{t+8}, f_{t+16}, f_{t+25}, f_{t+33}, f_{t+41}, f_{t+49}]`，4 个 tubelet | tubelet 0（只含 f_t，不泄露未来） | tubelet 3 | 最后一层 |
+| **V2** | 同上 | 256 | 8 帧：`[f_t, f_t, f_{t+8}, f_{t+16}, f_{t+24}, f_{t+33}, f_{t+41}, f_{t+49}]`，4 个 tubelet | tubelet 0（只含 f_t，不泄露未来） | tubelet 3 | 最后一层 |
 | **V3** | V-JEPA 2.1 ViT-L（官方代码） | 256 | 同 V1（RoPE 自动插值） | tubelet 0 | tubelet 1 | 最后一层 + norm |
 | **V3h** | 同上 | 384（224 放大到 384） | 同 V1；输出 24×24 个 token，再按面积插值到 16×16 | tubelet 0 | tubelet 1 | 同上 |
 | V4（可选） | DINOv3 ViT-L/16（逐帧） | 256 | 单帧 | f_t | f_{t+49} | 最后一层 |
