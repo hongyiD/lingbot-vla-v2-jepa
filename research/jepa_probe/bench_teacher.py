@@ -58,9 +58,9 @@ def summarize(forward_seconds: float, baseline: float = BASELINE_STEP_SECONDS) -
 
 
 def decode_cost(index_dir: Path, frames: int = 200) -> float:
-    """Median seconds to decode one PNG and resize it to 224 in a single process."""
+    """Median seconds to decode one PNG and resize it like training, in a single process."""
     from research.jepa_probe.common import load_index, split_ids
-    from research.jepa_probe.frames import FrameReader, decode_png, resize_224
+    from research.jepa_probe.frames import FrameReader, decode_png, resize_frame
 
     index = load_index(index_dir)
     train = split_ids(index, "train")
@@ -71,7 +71,7 @@ def decode_cost(index_dir: Path, frames: int = 200) -> float:
     timings = []
     for payload in payloads:
         started = time.perf_counter()
-        resize_224(decode_png(payload))
+        resize_frame(decode_png(payload))
         timings.append(time.perf_counter() - started)
     return float(np.median(timings))
 
@@ -85,11 +85,12 @@ def decode_load(extra_frames: int, seconds_per_frame: float, workers: int) -> di
 def bench_variant(variant: dict, *, batch: int, iters: int, warmup: int, compile_teacher: bool) -> dict:
     import torch
 
+    from research.jepa_probe.frames import IMAGE_SIZE
     from research.jepa_probe.teachers import build_runner
 
     device = torch.device("cuda")
     runner = build_runner(variant, device)
-    frames = torch.randint(0, 256, (batch, len(runner.positions), 3, 224, 224), dtype=torch.uint8, device=device)
+    frames = torch.randint(0, 256, (batch, len(runner.positions), 3, *IMAGE_SIZE), dtype=torch.uint8, device=device)
     fps = torch.full((batch,), 50.0 / 49.0, device=device)
     torch.cuda.reset_peak_memory_stats()
     result = {"positions": list(runner.positions), "eager": time_forward(lambda: runner(frames, fps), iters, warmup),

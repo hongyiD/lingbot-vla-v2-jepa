@@ -1,6 +1,6 @@
 """Teacher runners for the probe variants (plan section 2.2).
 
-A runner takes `frames` uint8 [B, P, 3, 224, 224], the frames at `runner.positions` (offsets from
+A runner takes `frames` uint8 [B, P, 3, H, W] (training pixels, frames.IMAGE_SIZE), the frames at `runner.positions` (offsets from
 t, as produced by frames.FrameReader.load), and `fps` [B], the effective future-video fps. It
 returns (current, future) tokens, each [B, grid * grid, C] float32 on a `runner.grid` square grid.
 
@@ -9,10 +9,19 @@ returns (current, future) tokens, each [B, grid * grid, C] float32 on a `runner.
 """
 from __future__ import annotations
 
+import sys
+
 import torch
 import torch.nn.functional as F
 
 from research.jepa_probe.frames import to_teacher_input
+
+
+def add_extra_paths(variant: dict) -> None:
+    """Append the variant's `extra_paths` to sys.path, after the image's own packages."""
+    for path in variant.get("extra_paths", []):
+        if path not in sys.path:
+            sys.path.append(path)
 
 
 def frame_positions(variant: dict) -> tuple[int, ...]:
@@ -48,7 +57,13 @@ class Runner:
 
 
 class DinoVideoRunner(Runner):
-    """V0: the training target, through module_utils.get_video_target with the training video config."""
+    """V0: the training target, through module_utils.get_video_target with the training video config.
+
+    `fps` is not passed on. FeatureTransform.convert_features drops the dataset's
+    future_video_effective_fps, so training calls get_video_target without it and the teacher
+    uses `effective_fps` from the video config. check_pipeline.py verifies that against the
+    real data path.
+    """
 
     def __init__(self, variant: dict, device: torch.device):
         super().__init__(variant, device)
@@ -64,8 +79,9 @@ class DinoVideoRunner(Runner):
     def _forward(self, frames, fps):
         from lingbotvla.models.vla.vision_models.module_utils import get_video_target
 
+        del fps
         bundle = get_video_target(self.teacher, frames[:, self.current:self.current + 1],
-                                  frames[:, self.future:self.future + 1], self.video_cfg, effective_fps=fps)
+                                  frames[:, self.future:self.future + 1], self.video_cfg)
         return bundle["current_patch"], bundle["patch"]
 
 
@@ -147,6 +163,7 @@ def build_runner(variant: dict, device: torch.device | str) -> Runner:
     if kind == "hf_vjepa2":
         teacher = VJepaTeacher.from_hf(variant["weights"], dtype=torch.float32)
     elif kind == "vjepa2_1":
+        add_extra_paths(variant)
         teacher = VJepaTeacher.from_vjepa2_1(variant["source"], variant["weights"],
                                              img_size=int(variant.get("img_size", 384)))
     elif kind == "toy":  # tests only

@@ -1,4 +1,4 @@
-"""frames.resize_224 follows the training pixel path, and parquet reads round-trip."""
+"""frames.resize_frame follows the training pixel path, and parquet reads round-trip."""
 import numpy as np
 import pytest
 from PIL import Image
@@ -33,22 +33,22 @@ def test_resize_matches_training_path():
     from torchvision import transforms
     from torchvision.transforms import v2
 
-    from research.jepa_probe.frames import resize_224
+    from research.jepa_probe.frames import resize_frame
 
     rng = np.random.default_rng(0)
     image = Image.fromarray(rng.integers(0, 256, (30, 40, 3), dtype=np.uint8), "RGB")
-    expected = v2.Resize((224, 224))(transforms.ToTensor()(image))
+    expected = v2.Resize((256, 256))(transforms.ToTensor()(image))
     expected = (expected * 255).round().clamp(0, 255).to(torch.uint8)
-    got = resize_224(image)
-    assert got.shape == (3, 224, 224) and got.dtype == torch.uint8
+    got = resize_frame(image)
+    assert got.shape == (3, 256, 256) and got.dtype == torch.uint8
     assert torch.equal(got, expected)
 
 
-def test_resize_is_identity_at_224():
-    from research.jepa_probe.frames import resize_224
+def test_resize_is_identity_at_training_size():
+    from research.jepa_probe.frames import resize_frame
 
-    image = Image.new("RGB", (224, 224), (10, 20, 30))
-    assert torch.equal(resize_224(image)[:, 0, 0], torch.tensor([10, 20, 30], dtype=torch.uint8))
+    image = Image.new("RGB", (256, 256), (10, 20, 30))
+    assert torch.equal(resize_frame(image)[:, 0, 0], torch.tensor([10, 20, 30], dtype=torch.uint8))
 
 
 def test_teacher_input_normalization():

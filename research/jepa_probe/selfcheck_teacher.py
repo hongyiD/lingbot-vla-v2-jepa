@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -30,6 +29,7 @@ def _finite(*tensors) -> bool:
 def check_dino_video(variant: dict, device: str) -> list[str]:
     import torch
 
+    from research.jepa_probe.frames import IMAGE_SIZE
     from research.jepa_probe.teachers import build_runner
 
     runner = build_runner(variant, device)
@@ -39,7 +39,7 @@ def check_dino_video(variant: dict, device: str) -> list[str]:
                                                             fps=torch.full((2,), 50 / 49, device=device))
     assert future.shape == current.shape == (2, 256, EMBED_DIM), (future.shape, current.shape)
     assert _finite(future, current), "NaN or inf in DINO-Video tokens"
-    frames = torch.randint(0, 256, (2, len(runner.positions), 3, 224, 224), dtype=torch.uint8, device=device)
+    frames = torch.randint(0, 256, (2, len(runner.positions), 3, *IMAGE_SIZE), dtype=torch.uint8, device=device)
     cur, fut = runner(frames, torch.full((2,), 50 / 49, device=device))
     assert cur.shape == fut.shape == (2, 256, EMBED_DIM) and _finite(cur, fut)
     return [f"get_future_feature -> {tuple(future.shape)} x2; runner -> {tuple(cur.shape)} x2"]
@@ -76,7 +76,9 @@ def check_vjepa2_1(variant: dict, device: str, batch: int) -> list[str]:
     import torch
 
     from lingbotvla.models.vla.vision_models.jepa.teacher import VJepaTeacher
+    from research.jepa_probe.teachers import add_extra_paths
 
+    add_extra_paths(variant)
     teacher = VJepaTeacher.from_vjepa2_1(variant["source"], variant["weights"],
                                          img_size=int(variant.get("img_size", 384))).to(device)
     notes = ["strict load of ema_encoder ok"]
@@ -96,12 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variants_cfg", type=Path, default=Path("research/jepa_probe/configs/variants.yaml"))
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch", type=int, default=None, help="default 2 on GPU, 1 on CPU")
-    parser.add_argument("--pylib", default=os.path.join(os.environ.get("D", "/mnt/work"), "pylib"),
-                        help="extra site dir with timm for the V-JEPA 2.1 code")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
-    if os.path.isdir(args.pylib) and args.pylib not in sys.path:
-        sys.path.append(args.pylib)
 
     from research.jepa_probe.extract_features import load_variant
 

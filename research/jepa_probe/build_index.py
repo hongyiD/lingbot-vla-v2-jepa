@@ -35,7 +35,8 @@ from research.jepa_probe.common import (
 
 
 def dataset_dirs(train_list: Path) -> list[Path]:
-    dirs = [Path(line.strip()) for line in train_list.read_text(encoding="utf-8").splitlines() if line.strip()]
+    """Dataset directories of a LingBot train list: lines are '<robot config name> <dataset dir>'."""
+    dirs = [Path(line.split()[-1]) for line in train_list.read_text(encoding="utf-8").splitlines() if line.strip()]
     missing = [str(d) for d in dirs if not (d / "meta" / "info.json").is_file()]
     if missing:
         raise FileNotFoundError("train list entries without meta/info.json:\n  " + "\n  ".join(missing))

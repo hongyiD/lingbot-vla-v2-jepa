@@ -51,7 +51,7 @@ def workspace(tmp_path_factory):
     dirs = [write_dataset(root / "data", f"{task}-aloha-agilex_clean_50-50", episodes=[12] * 6)
             for task in ("click_bell", "turn_switch")]
     train_list = root / "train.txt"
-    train_list.write_text("\n".join(map(str, dirs)) + "\n")
+    train_list.write_text("".join(f"robotwin_c50 {d}\n" for d in dirs))
     norm, robot = root / "norm.json", root / "robot.yaml"
     write_norm_stats(norm)
     write_robot_config(robot)

@@ -1,13 +1,14 @@
 """Read top-camera frames and reproduce the pixels LingBot feeds its teachers.
 
 Training path for parquet-embedded PNG cameras: lerobot decodes to float [0, 1] (ToTensor), the
-dataset applies torchvision v2 Resize((224, 224)) to that float tensor, and pad_and_concat turns it
+dataset applies torchvision v2 Resize((256, 256)) to that float tensor, and pad_and_concat turns it
 back into uint8 with (x * 255).round().clamp(0, 255). The teacher then resizes that uint8 image to
-its own input size with bilinear interpolation (module_utils.get_video_target). Both steps are
-reproduced here, in the same order and with the same ops, so probe features match training targets.
+its own input size with bilinear interpolation (module_utils.get_video_target; a no-op for the
+256 px DINO-Video). Both steps are reproduced here, in the same order and with the same ops, so
+probe features match training targets. check_pipeline.py compares the pixels with the dataset's.
 
   reader = FrameReader(dataset_dir)
-  frames = reader.load([row_t, row_future])                # uint8, [N, 3, 224, 224]
+  frames = reader.load([row_t, row_future])                # uint8, [N, 3, 256, 256]
   teacher_input = to_teacher_input(frames, input_size=256) # float, ImageNet-normalized
 """
 from __future__ import annotations
@@ -22,7 +23,8 @@ from PIL import Image
 
 from research.jepa_probe.common import IMAGENET_MEAN, IMAGENET_STD, TOP_CAMERA
 
-IMAGE_SIZE = (224, 224)
+# build_vla_dataset uses getattr(data_config, "img_size", 256), and DataArguments has no img_size.
+IMAGE_SIZE = (256, 256)
 
 
 class FrameReader:
@@ -84,10 +86,10 @@ class FrameReader:
         return column
 
     def load(self, dataset_rows: list[int]):
-        """uint8 frames at 224, shape [N, 3, 224, 224], in the order of `dataset_rows`."""
+        """uint8 frames [N, 3, *IMAGE_SIZE] in the order of `dataset_rows`."""
         import torch
 
-        return torch.stack([resize_224(image) for image in self.images(dataset_rows)])
+        return torch.stack([resize_frame(image) for image in self.images(dataset_rows)])
 
 
 def _payload(cell, camera: str, row: int) -> bytes:
@@ -101,8 +103,8 @@ def decode_png(payload: bytes) -> Image.Image:
     return Image.open(io.BytesIO(payload)).convert("RGB")
 
 
-def resize_224(image: Image.Image):
-    """PIL image -> the uint8 [3, 224, 224] tensor training puts in `pil_images`."""
+def resize_frame(image: Image.Image):
+    """PIL image -> the uint8 [3, *IMAGE_SIZE] tensor training puts in `pil_images`."""
     import torch
     from torchvision.transforms import functional as TF
     from torchvision.transforms import v2
@@ -113,7 +115,7 @@ def resize_224(image: Image.Image):
 
 
 def to_teacher_input(frames, input_size: int):
-    """uint8 [N, 3, 224, 224] -> ImageNet-normalized float [N, 3, input_size, input_size].
+    """uint8 [N, 3, H, W] -> ImageNet-normalized float [N, 3, input_size, input_size].
 
     Mirrors get_video_target: float conversion, bilinear resize (no antialias), then normalization.
     """

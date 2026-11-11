@@ -157,7 +157,7 @@ def viz_samples(index: dict[str, np.ndarray], limit: int) -> np.ndarray:
 
 
 class ShardFrames(_IterableDataset):
-    """Iterable of (sample ids, frames uint8 [b, P, 3, 224, 224], fps [b]) batches for one shard.
+    """Iterable of (sample ids, frames uint8 [b, P, 3, H, W], fps [b]) batches for one shard.
 
     Each DataLoader worker takes one contiguous slice of the shard, so consecutive samples come
     from the same parquet row groups and every row group is read about once.

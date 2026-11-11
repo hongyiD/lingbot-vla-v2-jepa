@@ -65,6 +65,7 @@ variants:
   V3:  # V-JEPA 2.1 ViT-L at 256 (RoPE interpolation), encoder weights only
     teacher: vjepa2_1
     source: vjepa2-src
+    extra_paths: ["${D}/pylib"]  # timm, installed with --no-deps in T1.1
     weights: vjepa2_1_vitl_384_ema_encoder.pt
     input_size: 256
     clip_frames: [0, 0, 49, 49]
@@ -74,6 +75,7 @@ variants:
   V3h:  # V-JEPA 2.1 at its native 384, tokens resampled from 24x24 down to 16x16
     teacher: vjepa2_1
     source: vjepa2-src
+    extra_paths: ["${D}/pylib"]  # timm, installed with --no-deps in T1.1
     weights: vjepa2_1_vitl_384_ema_encoder.pt
     input_size: 384
     resample_to: 16

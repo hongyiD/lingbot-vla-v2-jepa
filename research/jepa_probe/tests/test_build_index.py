@@ -20,7 +20,7 @@ def _setup(tmp_path: Path):
     first = write_dataset(data, "click_bell-aloha-agilex_clean_50-50", episodes=EPISODES, fps=50)
     second = write_dataset(data, "turn_switch_joint_v30", episodes=EPISODES, fps=25)
     train_list = tmp_path / "train.txt"
-    train_list.write_text(f"{first}\n{second}\n")
+    train_list.write_text(f"robotwin_c50 {first}\nrobotwin_c50 {second}\n")
     norm_stats = tmp_path / "norm.json"
     write_norm_stats(norm_stats)
     robot_config = tmp_path / "robot.yaml"
@@ -125,7 +125,7 @@ def test_gripper_event_column_and_v2_rows(tmp_path):
 def test_rejects_non_v3(tmp_path):
     import json
     train_list, robot_config, norm_stats = _setup(tmp_path)
-    dataset = Path(train_list.read_text().splitlines()[0])
+    dataset = Path(train_list.read_text().splitlines()[0].split()[-1])
     info_path = dataset / "meta" / "info.json"
     info = json.loads(info_path.read_text())
     info["codebase_version"] = "v2.1"
