@@ -192,18 +192,18 @@
 
 ### T1.1 教师权重与依赖就位（Pod，白天用 `lingbot-data`，经代理）
 
-先设置代理（只在下载时设，用完就 `unset`）。代理地址和 `no_proxy` 列表见 `embodiedx` 训练 runbook 第 1 节，不写进仓库：
+代理由 `lingbot-data` 的 Deployment 预先设好（大小写两套变量和 `no_proxy`），不要再 `export` 覆盖。地址不写进仓库。先测连通性：
 ```bash
 source /mnt/work/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env
-export http_proxy=$POD_PROXY https_proxy=$POD_PROXY HTTP_PROXY=$POD_PROXY HTTPS_PROXY=$POD_PROXY \
-       no_proxy=$POD_NO_PROXY NO_PROXY=$POD_NO_PROXY   # 事先 export POD_PROXY / POD_NO_PROXY
+env | grep -iE '^(https?_proxy|no_proxy)='    # 应看到 4 个代理变量和 2 个 no_proxy
 V=$D/weights/vjepa; mkdir -p $V
-# 能连通时，请求第一个字节应返回 206
 for u in https://hf-mirror.com/facebook/vjepa2-vitl-fpc64-256/resolve/b3c1679b7c34d3255ef3547f27c7b226aefab26f/config.json \
          https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitl_dist_vitG_384.pt \
          https://codeload.github.com/facebookresearch/vjepa2/tar.gz/204698b45b3712590f06245fbfba32d3be539812; do
-  curl -sS -o /dev/null -r 0-0 -w "%{http_code} $u\n" "$u"; done
+  curl -sSL -m 60 -o /dev/null -r 0-0 -w "http=%{http_code} proxy_connect=%{http_connect} $u\n" "$u"
+done
 ```
+判据：`proxy_connect=200`；前两个返回 206 或 200，codeload 现场打包、不支持按范围请求，返回 200 即正常。11-11 实测三个都通（200 / 206 / 200）。
 
 | 物件 | 来源（固定版本） | 大小 | 校验 |
 |---|---|---|---|
