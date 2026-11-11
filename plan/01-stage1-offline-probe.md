@@ -239,6 +239,14 @@ done
    - 分别以 256 和 384 输入，确认 token 数是 512（2×16×16）和 1152（2×24×24）。
 4. 结果写入 `$R/jepa/s1_teacher_selfcheck.txt`，记一条台账。
 
+以上由 `research/jepa_probe/selfcheck_teacher.py` 完成，每个变体输出一行 PASS/FAIL，有失败时退出码为 1。另外还检查 V1m：中间层经过 LayerNorm 后，每个 token 的均值约为 0、标准差约为 1。V1、V1m、V3 用 CPU 也能跑，可以白天先在 `lingbot-data` 上验掉，晚上只补 V0：
+
+```bash
+cd $LB && source research/tools/pod/pod.env
+python -m research.jepa_probe.selfcheck_teacher --variants V1,V1m,V3 --device cpu --out $R/jepa/s1_teacher_selfcheck_cpu.txt
+python -m research.jepa_probe.selfcheck_teacher --variants V0,V1,V1m,V3 --device cuda --out $R/jepa/s1_teacher_selfcheck.txt  # lingbot-train
+```
+
 ---
 
 ## 4. 执行步骤
