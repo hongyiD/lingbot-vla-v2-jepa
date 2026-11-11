@@ -36,7 +36,7 @@
 | 训练清单 / 机器人配置 / 归一化统计 | `/mnt/work/lists/train_c50.txt`、`/mnt/work/lingbot_cfg/robot_configs/robotwin_c50.yaml`、`/mnt/work/lingbot_cfg/norm_stats/robotwin_c50.json`（sha256 `424112547ad9dd…`） | 台账 #20 |
 | DINO-Video 教师 | `/mnt/work/weights/lingbot-vla-v2-6b/dino_video/teacher_step_10000.pth`、`config.yaml` | 训练 runbook 7.2 |
 | 训练镜像 | `lingbotvla-train:20261017-be969b8-r1`：torch 2.8 cu129、**transformers 4.57.3**（已含 `VJEPA2Model`）、lerobot 0.4.2、datasets 3.6、einops、av、torchcodec；**没有 timm** | `requirements.txt`，台账 #1 |
-| Pod 环境 | `source /mnt/vla/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env`：变量 `D`、`W`、`CFG`、`R`、`HF_HOME`；函数 `lb_run`。`LB` 自动取 pod.env 所在的仓库目录 | `research/tools/pod/pod.env` |
+| Pod 环境 | `source /mnt/work/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env`：变量 `D`、`W`、`CFG`、`R`、`HF_HOME`；函数 `lb_run`。`LB` 自动取 pod.env 所在的仓库目录 | `research/tools/pod/pod.env` |
 | 读数据时不解码图片的做法 | `agx_run.py` 的 `_non_image_view`：`hf_dataset.remove_columns(图像列)` | `research/tools/pod/agx_run.py` |
 | 用 curl 按清单下载 | `mirror_fetch.sh`，配合 `tools/hf_manifest.py`、`tools/verify_downloads.py` | 训练 runbook 5.9 |
 | 台账工具 | `research/tools/ledger.py`，默认写到 `research/ledger/` | — |
@@ -187,14 +187,14 @@
    - 用随机初始化的小 ViT 测 `teacher.py` 的形状契约：输入 `[B, 3, T, H, W]`，输出 `(future[B, 256, 1024], current[B, 256, 1024])`。
 4. 打包上传（训练机上不放 GitHub 凭证，所以不在 Pod 里 `git clone`）：
    - 本地执行 `git archive --format=tar.gz -o lingbot-$(git rev-parse --short HEAD).tar.gz HEAD`。`embodiedx/` 被 `.gitignore` 排除，不会打进包里；
-   - 包只有几十 MB，从 PVC 页面上传到 PVC 根目录的 `code/`（`lingbot-data` 上挂载为 `/mnt/vla/code`；`/mnt/work` 是子目录 `embodiedx`，里面没有 `code/`）；
-   - 解压到 `/mnt/vla/code/lingbot-vla-v2-jepa`，记录 sha256 和 commit（`export LB_COMMIT=<commit>`，`extract_features` 会写进 `meta.json`）。
+   - 包只有几十 MB，从 PVC 页面上传到卷里的 `embodiedx/code/`，即 Pod 里的 `/mnt/work/code/`（卷根目录在 Pod 里只读挂载为 `/mnt/vla`，可以从那里读包，但不能往里解压）；
+   - 解压到 `/mnt/work/code/lingbot-vla-v2-jepa`，记录 sha256 和 commit（`export LB_COMMIT=<commit>`，`extract_features` 会写进 `meta.json`）。
 
 ### T1.1 教师权重与依赖就位（Pod，白天用 `lingbot-data`，经代理）
 
 先设置代理（只在下载时设，用完就 `unset`）。代理地址和 `no_proxy` 列表见 `embodiedx` 训练 runbook 第 1 节，不写进仓库：
 ```bash
-source /mnt/vla/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env
+source /mnt/work/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env
 export http_proxy=$POD_PROXY https_proxy=$POD_PROXY HTTP_PROXY=$POD_PROXY HTTPS_PROXY=$POD_PROXY \
        no_proxy=$POD_NO_PROXY NO_PROXY=$POD_NO_PROXY   # 事先 export POD_PROXY / POD_NO_PROXY
 V=$D/weights/vjepa; mkdir -p $V
@@ -246,7 +246,7 @@ for u in https://hf-mirror.com/facebook/vjepa2-vitl-fpc64-256/resolve/b3c1679b7c
 ### 步骤 1：建样本索引和标签（`lingbot-data`，白天，CPU）
 
 ```bash
-source /mnt/vla/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env   # 已把本仓库放到 PYTHONPATH 最前面
+source /mnt/work/code/lingbot-vla-v2-jepa/research/tools/pod/pod.env   # 已把本仓库放到 PYTHONPATH 最前面
 export OMP_NUM_THREADS=1
 P=$D/jepa/probe; mkdir -p $P
 python -m research.jepa_probe.build_index \

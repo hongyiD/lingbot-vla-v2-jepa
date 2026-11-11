@@ -233,7 +233,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
    - 有没有把 checkpoint 从 TAIP 传到 4090 的正规通道。
 3. **代码同步通道。**
    - 代码托管在个人 GitHub 的私有仓库 `lingbot-vla-v2-jepa`。官方仓库作为 `upstream` 远端，用来同步官方更新。
-   - 训练机上不放 GitHub 凭证。每次同步时，在本地用 `git archive` 打包要部署的提交（几 MB），通过 PVC 页面上传到 PVC 根目录的 `code/`，解压到 `/mnt/vla/code/lingbot-vla-v2-jepa`，并把 commit 和 sha256 记入台账。
+   - 训练机上不放 GitHub 凭证。每次同步时，在本地用 `git archive` 打包要部署的提交（几 MB），通过 PVC 页面上传到卷里的 `embodiedx/code/`（Pod 里是 `$D/code/`），解压到 `$D/code/lingbot-vla-v2-jepa`，并把 commit 和 sha256 记入台账。`/mnt/vla` 在两个 Pod 里都是只读挂载，不能往里解压。
    - Pod 里 `source research/tools/pod/pod.env`，本仓库会排在 `PYTHONPATH` 最前面，覆盖镜像里固定在 `be969b8` 的 `/opt/lingbot-vla-v2`。不需要重新打镜像。
 4. **评测链路 E1**（沿用 `embodiedx/plans/2026-10-22-robotwin-eval-env.plan.md`）：
    - 在 `$D/envs/RoboTwin` 建仿真环境：Python 3.10，torch 2.8 cu129，sapien 3.0.0b1，mplib 0.2.1，curobo v0.7.8 按 sm_103 编译，两处 `sed` 补丁照做；
@@ -353,7 +353,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 
 | 资产 | 位置 | 用在哪 | 说明 |
 |---|---|---|---|
-| Pod 环境与启动函数 | `research/tools/pod/pod.env`：`lb_run`、`smoke_stats`、`step_wall` | 阶段 1–6 | 由 `taip.env` 改来：`LB` 默认取 pod.env 所在的仓库目录（即同步到 PVC 的本仓库，`/mnt/vla/code/lingbot-vla-v2-jepa`），并放在 `PYTHONPATH` 最前面，覆盖镜像里的旧代码；各变量都可以先 export 覆盖 |
+| Pod 环境与启动函数 | `research/tools/pod/pod.env`：`lb_run`、`smoke_stats`、`step_wall` | 阶段 1–6 | 由 `taip.env` 改来：`LB` 默认取 pod.env 所在的仓库目录（即同步到 PVC 的本仓库，`$D/code/lingbot-vla-v2-jepa`），并放在 `PYTHONPATH` 最前面，覆盖镜像里的旧代码；各变量都可以先 export 覆盖 |
 | 数据读取补丁 | `research/tools/pod/agx_run.py` | 阶段 1–6 | 训练必须带上（`lb_run` 已经内置）；阶段一读标签也照它的做法，不解码图像列 |
 | 配置生成 | `research/tools/pod/make_train_configs.py` | 阶段 2–4 | 要扩展出 `--arm A0..A3`、`--seed`、`--teacher_type` 参数 |
 | 训练指标解析 | `research/tools/pod/train_metrics.py` | 阶段 3–4 | 要加上 `FutureJepa_Loss` 列 |
@@ -391,9 +391,9 @@ lingbot-vla-v2-jepa/          # 个人 GitHub 私有仓库；upstream = Robbyant
 └── embodiedx/                # 本地参考，已写进 .gitignore，不提交
 ```
 
-**PVC 目录（PVC `lingbot-vla`：根目录挂载为 `/mnt/vla`，子目录 `embodiedx` 挂载为 `$D=/mnt/work`）：**
+**PVC 目录（PVC `lingbot-vla`：子目录 `embodiedx` 可写，挂载为 `$D=/mnt/work`；整个卷另外只读挂载为 `/mnt/vla`）：**
 ```
-/mnt/vla/code/lingbot-vla-v2-jepa/   # 同步上来的分支代码（每次同步记 sha256）
+$D/code/lingbot-vla-v2-jepa/  # 同步上来的分支代码（每次同步记 sha256）
 $D/weights/vjepa/             # V-JEPA 2 与 2.1 的权重和官方代码快照
 $D/jepa/probe/                # 阶段一：样本索引、离线特征、探针结果
 $D/runs/jepa_<臂>_s<seed>/    # 阶段三、四的训练 run
