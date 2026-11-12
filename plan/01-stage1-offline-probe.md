@@ -317,18 +317,23 @@ python -m research.jepa_probe.check_pipeline video --index $P/index --batches 4 
    - A 与 B 按 token 计算的余弦相似度 ≥ 0.999，相对 L2 误差 ≤ 1%（误差来自 bf16）。
 4. 不通过就停下排查（常见原因是缩放的插值方式、antialias 或 dtype 的顺序不同），不要继续。
 
-### 步骤 3：提特征（夜间，1–2 张 GPU）
+### 步骤 3：提特征（4 张 GPU，约 30–60 分钟）
 
 ```bash
 cd $LB
-for v in V0 B-pixel V1 V1i V1m V2 V3 V3h; do
-  CUDA_VISIBLE_DEVICES=0 python -m research.jepa_probe.extract_features \
-    --variant $v --variants_cfg research/jepa_probe/configs/variants.yaml \
-    --index $P/index --out $P/features/$v --batch 64 --num_workers 16 --dtype bf16 --viz 1000
+VS=V0,B-pixel,V1,V1i,V1m,V2,V3,V3h
+for g in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$g python -m research.jepa_probe.extract_features \
+    --variant $VS --variants_cfg research/jepa_probe/configs/variants.yaml \
+    --index $P/index --features $P/features --part $g/4 \
+    --batch 64 --num_workers 16 --dtype bf16 --viz 1000 > $P/logs/extract_g$g.log 2>&1 &
 done
+wait
 ```
 
-- **先小规模试跑：** 每个变体先加 `--max_shards 1` 跑一个分片（2048 个样本），看耗时和输出形状，再去掉这个参数跑完。已完成的分片会自动跳过。
+- **一次读帧、所有变体共用：** 瓶颈是读 parquet 和解 PNG，不是教师前向。parquet 按整个 row group 读，单个分片实际要读约 10 倍的帧；如果每个变体各跑一遍，同一批帧要读 8 次，4 个进程还会抢 PVC 带宽（实测每个分片从 34 秒拖到 4–5 分钟）。所以每个分片只读、只解码一次，再依次送进每个还缺这个分片的教师。
+- **`--part k/n`：** 进程 k 只负责编号 k、k+n、k+2n…的分片，4 张卡之间不会重复做同一个分片。每个变体由最后补齐它的进程写 `stats.npz` 和 `meta.json`（先写临时文件再改名）。
+- **先小规模试跑：** 加 `--max_shards 1` 只跑一个分片（2048 个样本），看耗时和输出形状，再去掉这个参数跑完。已完成的分片会自动跳过，单变体也可以用 `--variant V0 --out $P/features/V0`。
 - **B-pixel** 也作为一个"变体"提取（两帧各缩到 16×16，按 2×2 组成 64 个 12 维 token），供探针基线使用。
 - **V0** 用 `variants.yaml` 里抄自训练配置的 `video` 段，DINO 权重在 `${W}/lingbot-vla-v2-6b/dino_video/`。
 - **输出：** `features/<v>/shard_*.npz`，每个样本含 `cur[64,1024]` 和 `fut[64,1024]`（fp16）；外加：
@@ -336,11 +341,7 @@ done
   - 可视化样本（每个任务第一条测试 episode 的全部样本，约 850 个）的完整 16×16 token，存在对应分片的 `viz_ids` / `viz_cur` / `viz_fut` 里；
   - `meta.json`：变体配置、代码 commit（取自 `LB_COMMIT`）、权重的 sha256、耗时。
 - **断点续跑：** 已完成的分片会跳过；分片先写临时文件再改名，中途被杀不会留下半个分片。
-- **耗时估计：**
-  - 每个 2 帧变体要解码约 8.6 万张 PNG，16 个 worker 下以解码为主，约 5–10 分钟；
-  - V2 每个样本有 7 张不同的帧，共约 30 万张，约 20–30 分钟；
-  - 教师前向不是瓶颈。
-  - 一夜可以提完全部变体。
+- **耗时估计：** 每个分片读一次全部 7 个位置（V2 需要），8 个教师的前向合计约 2 秒/batch（见步骤 4 的 bench）；22 个分片分给 4 张卡，每张卡 5–6 个分片。
 - **磁盘：** 7 个变体约 77 GB。先确认 PVC 余量 ≥ 150 GB（`df -h $D`）。
 
 ### 步骤 4：P5 开销测量（夜间，与步骤 3 同一晚，约 20 分钟）

@@ -84,6 +84,43 @@ def test_features_are_complete_and_resumable(workspace):
     assert again["remaining"] == 0 and again["seconds"] < 30
 
 
+def test_multi_variant_parts_match_single_runs(workspace, monkeypatch, tmp_path):
+    """Several variants in one pass, shards split over two parts, with one shard already done."""
+    monkeypatch.setattr(extract_features, "SHARD_SIZE", 16)
+    names = ["V0", "V1", "B-pixel"]
+    variants = []
+    for name in names:
+        variant = extract_features.load_variant(workspace / "variants.yaml", name)
+        variant["dtype"] = "fp32"
+        variants.append(variant)
+    single, multi = tmp_path / "single", tmp_path / "multi"
+    for variant in variants:
+        assert extract_features.extract(variant, workspace / "index", single / variant["name"], batch=8,
+                                        num_workers=0, device="cpu", viz=10)["remaining"] == 0
+    (multi / "V1").mkdir(parents=True)
+    (multi / "V1" / "shard_0000032.npz").write_bytes((single / "V1" / "shard_0000032.npz").read_bytes())
+    common = dict(batch=8, num_workers=0, device="cpu", viz=10)
+    dirs = [multi / name for name in names]
+    first = extract_features.extract_many(variants, dirs, workspace / "index", part=(0, 2), **common)
+    assert all(result["remaining"] == 16 for result in first.values())
+    assert not (multi / "V0" / "stats.npz").exists()
+    second = extract_features.extract_many(variants, dirs, workspace / "index", part=(1, 2), **common)
+    assert all(result["remaining"] == 0 for result in second.values())
+    for name in names:
+        shards = sorted(path.name for path in (single / name).glob("shard_*.npz"))
+        assert len(shards) == 3 and shards == sorted(path.name for path in (multi / name).glob("shard_*.npz"))
+        for shard in shards:
+            with np.load(single / name / shard) as a, np.load(multi / name / shard) as b:
+                assert set(a.files) == set(b.files)
+                assert all(np.array_equal(a[key], b[key]) for key in a.files)
+        with np.load(single / name / "stats.npz") as a, np.load(multi / name / "stats.npz") as b:
+            assert np.allclose(a["mean"], b["mean"]) and np.allclose(a["std"], b["std"])
+
+    assert extract_features.main(["--variant", "V0,V1", "--variants_cfg", str(workspace / "variants.yaml"),
+                                  "--index", str(workspace / "index"), "--features", str(multi),
+                                  "--device", "cpu", "--num_workers", "0", "--dtype", "fp32"]) == 0
+
+
 def test_v1i_current_comes_from_its_own_clip(workspace):
     """V1 encodes the current frame alone; V0's toy encoder is per-tubelet, so both must agree."""
     with np.load(workspace / "features" / "V0" / "shard_0000000.npz") as v0, \

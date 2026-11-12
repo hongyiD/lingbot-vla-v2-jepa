@@ -1,4 +1,4 @@
-"""Extract pooled teacher tokens for every sample of one variant.
+"""Extract pooled teacher tokens for every sample of one or more variants.
 
 Outputs shards of fp16 tokens under <out>/shard_XXXXXXX.npz, each holding `cur` and `fut` arrays of
 shape [shard, 64, C] (the teacher's 16x16 grid pooled to 8x8). Shards that contain visualization
@@ -6,9 +6,15 @@ samples also hold their full-grid tokens as `viz_ids`, `viz_cur`, `viz_fut`. Fin
 skipped, so a run can resume. `stats.npz` carries the per-channel train-split mean and std that the
 probes normalize with, and `meta.json` the variant, checksums and timings.
 
+Reading the frames dominates: parquet is read by whole row groups, so a shard reads about ten times
+the frames it uses. With several variants, each shard's frames are read and decoded once and fed to
+every teacher that still lacks that shard. `--part k/n` takes every n-th shard, so n processes (one
+per GPU) split the reading; the process that writes the last shard of a variant writes its stats.
+
   python -m research.jepa_probe.extract_features --variant V1 \
       --variants_cfg research/jepa_probe/configs/variants.yaml \
       --index $P/index --out $P/features/V1 --batch 64 --num_workers 16 --viz 1000
+  python -m research.jepa_probe.extract_features --variant V0,B-pixel,V1 --features $P/features --part 0/4 ...
 """
 from __future__ import annotations
 
@@ -79,7 +85,8 @@ def pool_tokens(tokens, grid: int, pool: int):
     return grouped.mean(dim=(2, 4)).reshape(batch, -1, channels)
 
 
-def iter_shards(n_samples: int, shard_size: int = SHARD_SIZE):
+def iter_shards(n_samples: int, shard_size: int | None = None):
+    shard_size = shard_size or SHARD_SIZE
     for start in range(0, n_samples, shard_size):
         yield start, min(start + shard_size, n_samples)
 
@@ -217,83 +224,141 @@ def write_meta(out_dir: Path, variant: dict, n_samples: int, **extra) -> None:
     meta = read_json(path) if path.is_file() else {}
     meta.update({"variant": variant, "samples": n_samples, "pooled_tokens": POOLED_GRID ** 2,
                  "dtype": "float16", "code_commit": os.environ.get("LB_COMMIT")}, **extra)
-    path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    partial = path.with_name(f".partial_{os.getpid()}_{path.name}")
+    partial.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    partial.replace(path)
 
 
-def extract(variant: dict, index_dir: Path, out_dir: Path, *, batch: int, num_workers: int,
-            device: str, viz: int = 1000, max_shards: int | None = None, compile_teacher: bool = False) -> dict:
+def write_stats(out_dir: Path, stats: dict[str, np.ndarray]) -> None:
+    partial = out_dir / f".partial_{os.getpid()}_stats.npz"
+    np.savez(partial, **stats)
+    partial.replace(out_dir / "stats.npz")
+
+
+def parse_part(spec: str | None) -> tuple[int, int]:
+    """'k/n' -> (k, n): this process takes shards k, k+n, k+2n, ..."""
+    if not spec:
+        return 0, 1
+    k, n = (int(value) for value in spec.split("/"))
+    if not 0 <= k < n:
+        raise ValueError(f"bad --part {spec!r}: need 0 <= k < n")
+    return k, n
+
+
+class _Job:
+    """One variant inside a multi-variant run; `runner` stays None when this part has nothing to do."""
+
+    def __init__(self, variant: dict, out_dir: Path):
+        self.variant, self.out_dir = variant, Path(out_dir)
+        self.runner = None
+        self.wrote = False
+
+    @property
+    def pool(self) -> int:
+        return self.runner.grid // POOLED_GRID
+
+    def needs(self, start: int, end: int) -> bool:
+        path = shard_path(self.out_dir, start)
+        return not (path.is_file() and _shard_ok(path, end - start))
+
+
+def extract(variant: dict, index_dir: Path, out_dir: Path, **kwargs) -> dict:
+    return extract_many([variant], [out_dir], index_dir, **kwargs)[variant["name"]]
+
+
+def extract_many(variants: list[dict], out_dirs: list[Path], index_dir: Path, *, batch: int, num_workers: int,
+                 device: str, viz: int = 1000, max_shards: int | None = None, compile_teacher: bool = False,
+                 part: tuple[int, int] = (0, 1)) -> dict[str, dict]:
     from research.jepa_probe.teachers import build_runner
 
     index = load_index(index_dir)
     index_meta = read_json(index_dir / "index_meta.json")
     n_samples = len(index["sample_id"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    write_meta(out_dir, variant, n_samples)
-
-    runner = build_runner(variant, device)
-    if max(runner.positions) > index_meta["future_offset"]:
-        raise ValueError(f"clip position {max(runner.positions)} is past future_offset {index_meta['future_offset']}")
-    if compile_teacher:
-        runner.compile()
-    pool = runner.grid // POOLED_GRID
+    shards = [s for i, s in enumerate(iter_shards(n_samples)) if i % part[1] == part[0]]
     viz_ids = viz_samples(index, viz)
     started = time.time()
+
+    jobs = []
+    for variant, out_dir in zip(variants, out_dirs):
+        job = _Job(variant, out_dir)
+        job.out_dir.mkdir(parents=True, exist_ok=True)
+        write_meta(job.out_dir, variant, n_samples)
+        if any(job.needs(*shard) for shard in shards):
+            job.runner = build_runner(variant, device)
+            if max(job.runner.positions) > index_meta["future_offset"]:
+                raise ValueError(f"{variant['name']}: clip position {max(job.runner.positions)} is past "
+                                 f"future_offset {index_meta['future_offset']}")
+            if compile_teacher:
+                job.runner.compile()
+        jobs.append(job)
+
     done_shards = 0
-    for start, end in iter_shards(n_samples):
-        path = shard_path(out_dir, start)
-        if path.is_file() and _shard_ok(path, end - start):
+    for start, end in shards:
+        todo = [job for job in jobs if job.runner is not None and job.needs(start, end)]
+        if not todo:
             continue
         if max_shards is not None and done_shards >= max_shards:
             break
         shard_started = time.time()
-        ids = np.arange(start, end)
-        frames = ShardFrames(ids, index, runner.positions, batch, index_meta["future_offset"])
+        positions = tuple(sorted({p for job in todo for p in job.runner.positions}))
+        columns = [[positions.index(p) for p in job.runner.positions] for job in todo]
+        frames = ShardFrames(np.arange(start, end), index, positions, batch, index_meta["future_offset"])
         loader = torch.utils.data.DataLoader(
             frames, batch_size=None, num_workers=num_workers,
             pin_memory=torch.device(device).type == "cuda", prefetch_factor=4 if num_workers else None)
-        cur = fut = None
+        outputs = [{"cur": None, "fut": None, "viz_ids": [], "viz_cur": [], "viz_fut": []} for _ in todo]
         filled = np.zeros(end - start, dtype=bool)
-        viz_parts: dict[str, list] = {"viz_ids": [], "viz_cur": [], "viz_fut": []}
         for batch_ids, batch_frames, fps in loader:
-            current, future = runner(batch_frames.to(device, non_blocking=True), fps.to(device))
-            pooled_cur = pool_tokens(current, runner.grid, pool).cpu().numpy().astype(np.float16)
-            pooled_fut = pool_tokens(future, runner.grid, pool).cpu().numpy().astype(np.float16)
-            if cur is None:
-                cur = np.zeros((end - start, *pooled_cur.shape[1:]), dtype=np.float16)
-                fut = np.zeros_like(cur)
+            batch_frames, fps = batch_frames.to(device, non_blocking=True), fps.to(device)
             local = batch_ids.numpy() - start
-            cur[local], fut[local] = pooled_cur, pooled_fut
-            filled[local] = True
             keep = np.isin(batch_ids.numpy(), viz_ids)
-            if keep.any():
-                mask = torch.from_numpy(keep).to(current.device)
-                viz_parts["viz_ids"].append(batch_ids.numpy()[keep])
-                viz_parts["viz_cur"].append(current[mask].cpu().numpy().astype(np.float16))
-                viz_parts["viz_fut"].append(future[mask].cpu().numpy().astype(np.float16))
+            for job, cols, out in zip(todo, columns, outputs):
+                current, future = job.runner(batch_frames[:, cols], fps)
+                pooled_cur = pool_tokens(current, job.runner.grid, job.pool).cpu().numpy().astype(np.float16)
+                pooled_fut = pool_tokens(future, job.runner.grid, job.pool).cpu().numpy().astype(np.float16)
+                if out["cur"] is None:
+                    out["cur"] = np.zeros((end - start, *pooled_cur.shape[1:]), dtype=np.float16)
+                    out["fut"] = np.zeros_like(out["cur"])
+                out["cur"][local], out["fut"][local] = pooled_cur, pooled_fut
+                if keep.any():
+                    mask = torch.from_numpy(keep).to(current.device)
+                    out["viz_ids"].append(batch_ids.numpy()[keep])
+                    out["viz_cur"].append(current[mask].cpu().numpy().astype(np.float16))
+                    out["viz_fut"].append(future[mask].cpu().numpy().astype(np.float16))
+            filled[local] = True
         if not filled.all():
             raise RuntimeError(f"shard {start}: {int((~filled).sum())} samples were not produced")
-        extra = {key: np.concatenate(parts) for key, parts in viz_parts.items() if parts}
-        save_shard(path, cur, fut, **extra)
+        for job, out in zip(todo, outputs):
+            extra = {key: np.concatenate(out[key]) for key in ("viz_ids", "viz_cur", "viz_fut") if out[key]}
+            save_shard(shard_path(job.out_dir, start), out["cur"], out["fut"], **extra)
+            job.wrote = True
         done_shards += 1
-        print(f"{variant['name']} shard {start}-{end}: {time.time() - shard_started:.1f}s", flush=True)
+        names = ",".join(job.variant["name"] for job in todo)
+        print(f"shard {start}-{end} [{names}]: {time.time() - shard_started:.1f}s", flush=True)
 
-    remaining = pending_samples(out_dir, n_samples)
-    result = {"remaining": len(remaining), "seconds": time.time() - started}
-    if not remaining:
-        stats = compute_stats(out_dir, split_ids(index, "train"))
-        np.savez(out_dir / "stats.npz", **stats)
-        write_meta(out_dir, variant, n_samples, channels=int(stats["mean"].shape[-1]),
-                   viz_samples=int(len(viz_ids)), weights=weight_digests(variant),
-                   extract_seconds=result["seconds"])
-    return result
+    results = {}
+    for job in jobs:
+        remaining = pending_samples(job.out_dir, n_samples)
+        result = {"remaining": len(remaining), "seconds": time.time() - started}
+        if not remaining and (job.wrote or not (job.out_dir / "stats.npz").is_file()):
+            stats = compute_stats(job.out_dir, split_ids(index, "train"))
+            write_stats(job.out_dir, stats)
+            write_meta(job.out_dir, job.variant, n_samples, channels=int(stats["mean"].shape[-1]),
+                       viz_samples=int(len(viz_ids)), weights=weight_digests(job.variant),
+                       extract_seconds=result["seconds"])
+        results[job.variant["name"]] = result
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--variant", required=True)
+    parser.add_argument("--variant", required=True, help="one name, or a comma-separated list with --features")
     parser.add_argument("--variants_cfg", type=Path, required=True)
     parser.add_argument("--index", type=Path, required=True, help="directory written by build_index")
-    parser.add_argument("--out", type=Path, required=True)
+    outputs = parser.add_mutually_exclusive_group(required=True)
+    outputs.add_argument("--out", type=Path, help="output directory of a single variant")
+    outputs.add_argument("--features", type=Path, help="root; each variant writes to <features>/<name>")
+    parser.add_argument("--part", default=None, help="k/n: process every n-th shard, starting at shard k")
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--device", default="cuda")
@@ -303,12 +368,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compile", action="store_true")
     args = parser.parse_args(argv)
 
-    variant = load_variant(args.variants_cfg, args.variant)
-    variant["dtype"] = args.dtype
-    result = extract(variant, args.index, args.out, batch=args.batch, num_workers=args.num_workers,
-                     device=args.device, viz=args.viz, max_shards=args.max_shards, compile_teacher=args.compile)
-    status = "complete" if not result["remaining"] else f"{result['remaining']} samples left"
-    print(f"{args.variant}: {status} in {result['seconds']:.0f}s -> {args.out}")
+    names = [name for name in args.variant.split(",") if name]
+    if args.out is not None and len(names) != 1:
+        parser.error("--out takes a single variant; use --features for several")
+    variants = []
+    for name in names:
+        variant = load_variant(args.variants_cfg, name)
+        variant["dtype"] = args.dtype
+        variants.append(variant)
+    out_dirs = [args.out] if args.out is not None else [args.features / name for name in names]
+    results = extract_many(variants, out_dirs, args.index, batch=args.batch, num_workers=args.num_workers,
+                           device=args.device, viz=args.viz, max_shards=args.max_shards,
+                           compile_teacher=args.compile, part=parse_part(args.part))
+    for name, out_dir in zip(names, out_dirs):
+        result = results[name]
+        status = "complete" if not result["remaining"] else f"{result['remaining']} samples left"
+        print(f"{name}: {status} in {result['seconds']:.0f}s -> {out_dir}")
     return 0
 
 
