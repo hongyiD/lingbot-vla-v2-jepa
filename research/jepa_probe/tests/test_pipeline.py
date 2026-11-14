@@ -121,6 +121,29 @@ def test_multi_variant_parts_match_single_runs(workspace, monkeypatch, tmp_path)
                                   "--device", "cpu", "--num_workers", "0", "--dtype", "fp32"]) == 0
 
 
+def test_label_check(workspace, tmp_path):
+    from research.jepa_probe import label_check
+
+    assert label_check.parse_label("d=B-pixel.fut-V0.cur") == ("d", [("B-pixel", "fut", 1.0), ("V0", "cur", -1.0)])
+    with pytest.raises(ValueError):
+        label_check.parse_label("bad=V0.mid")
+    out = tmp_path / "label_check"
+    assert label_check.main([
+        "--features", str(workspace / "features"), "--index", str(workspace / "index"), "--out", str(out),
+        "--labels", "ref=V0.fut-V0.cur,v1_delta=V1.fut-V1.cur,v0_future=V0.fut,pixel=B-pixel.fut-B-pixel.cur,"
+                    "missing=V9.fut",
+        "--current", "V0,V1", "--reference", "ref", "--device", "cpu", "--mlp_epochs", "2",
+        "--bootstrap", "50"]) == 0
+    result = json.loads(out.with_suffix(".json").read_text())
+    assert set(result["forward"]) == {"ref", "v1_delta", "v0_future", "pixel"}
+    fit = result["forward"]["v1_delta"]["V0"]["mlp"]
+    assert {"r2_cur", "r2_cur_act", "dr2", "dr2_ci", "dr2_minus_ref", "dr2_minus_ref_ci"} <= set(fit)
+    assert "dr2_minus_ref" not in result["forward"]["ref"]["V1"]["ridge"]
+    assert set(result["inverse"]) == {"state only", "ref", "v1_delta", "v0_future", "pixel"}
+    assert result["decision"]["chosen"] in result["forward"]
+    assert "Decision" in out.with_suffix(".md").read_text()
+
+
 def test_v1i_current_comes_from_its_own_clip(workspace):
     """V1 encodes the current frame alone; V0's toy encoder is per-tubelet, so both must agree."""
     with np.load(workspace / "features" / "V0" / "shard_0000000.npz") as v0, \
