@@ -33,6 +33,10 @@ from .utils import (
 )
 from .flex_attention import build_block_mask, flex_attention_forward, flex_attention_with_block_mask
 from lingbotvla.models.loader import LingBotVLAWeightLoader
+from lingbotvla.models.vla.vision_models.align_heads.action_cond_head import (
+    ActionConditionedHead,
+    teacher_delta_target,
+)
 from lingbotvla.ops.triton_moe_loss import triton_sequence_wise_balance_loss
 from lingbotvla.models.vla.lingbot_vla.qwen2_action_expert import (
     Qwen2ForCausalLM,
@@ -483,7 +487,11 @@ class FlowMatchingV2(FlowMatchingV1):
             self.use_future_video = self.config.align_params.get("use_future_video", False)
             if self.use_future_video:
                 self.init_video_heads(self.config.align_params)
+            self.use_action_cond = bool((self.config.align_params.get("action_cond") or {}).get("enabled", False))
+            if self.use_action_cond:
+                self.init_action_cond_head(self.config.align_params)
         else:
+            self.use_action_cond = False
             self.use_depth_align = False
             self.use_future_video = False
             self.use_future_video_patch = False
@@ -764,6 +772,82 @@ class FlowMatchingV2(FlowMatchingV1):
         start, end = query_spans["current_depth"]
         return hidden_states[:, start:end, :]
 
+    def init_action_cond_head(self, config):
+        if not (getattr(self, "use_future_video", False) and getattr(self, "use_current_video_patch", False)):
+            raise ValueError(
+                "align_params.action_cond needs the DINO-Video current and future patch targets: "
+                "set use_future_video=True and video.use_current_patch_loss=True."
+            )
+        ac_cfg = config["action_cond"]
+        video_cfg = dict(config.get("depth", {}))
+        video_cfg.update(config.get("video", {}))
+        self.action_cond_loss_weight = float(ac_cfg.get("loss_weight", 0.004))
+        self.action_cond_detach_image_feats = bool(ac_cfg.get("detach_image_feats", False))
+        self.action_cond_shuffle_metric = bool(ac_cfg.get("shuffle_metric", True))
+        self.action_cond_head = ActionConditionedHead(
+            llm_dim=config["llm"]["dim_out"],
+            state_dim=self.config.max_state_dim,
+            action_dim=self.config.max_action_dim,
+            chunk_size=self.config.n_action_steps,
+            action_group=int(ac_cfg.get("action_group", 5)),
+            num_queries=int(ac_cfg.get("num_queries", video_cfg["num_backbone_tokens"])),
+            dim_out=int(video_cfg["dim_out"]),
+            num_layers=int(ac_cfg.get("num_layers", video_cfg["num_layers"])),
+            num_heads=int(ac_cfg.get("num_heads", video_cfg["num_heads"])),
+            dim_head=int(ac_cfg.get("dim_head", video_cfg["dim_head"])),
+            ff_mult=ac_cfg.get("ff_mult", video_cfg["ff_mult"]),
+            use_actions=bool(ac_cfg.get("use_actions", True)),
+            init_std=self.config.initializer_range or 0.02,
+        ).to(dtype=torch.bfloat16)
+
+    def action_cond_emb_forward(
+        self,
+        hidden_states,
+        state,
+        actions,
+        future_video_targets,
+        future_video_current_patch,
+        joint_mask=None,
+        state_joint_mask=None,
+        action_is_pad=None,
+    ):
+        """Weighted L1 between the head's prediction and LN(DINO future) - LN(DINO current), plus metrics.
+
+        With `shuffle_metric` the loss is also computed, without gradient, with the action chunks rolled by one sample
+        inside the batch; `align/action_cond_shuffle_gap` > 0 means the head uses the actions. This runs every step
+        rather than on a step counter, which would make the compiled forward branch on a Python int.
+        """
+        if future_video_targets is None or future_video_current_patch is None:
+            raise ValueError("action_cond needs future_video_targets and future_video_current_patch.")
+        chunk_size = self.llm_image_token_size * self.llm_image_token_size
+        image_embs = hidden_states[:, 1 : chunk_size + 1, :]
+        if self.action_cond_detach_image_feats:
+            image_embs = image_embs.detach()
+        vlm_tokens = torch.cat([image_embs, self._future_video_patch_task_tokens(hidden_states)], dim=1)
+        target = teacher_delta_target(future_video_targets, future_video_current_patch)
+        preds = self.action_cond_head(vlm_tokens, state, actions, joint_mask, state_joint_mask, action_is_pad)
+        if preds.shape != target.shape:
+            raise ValueError(f"action_cond prediction {tuple(preds.shape)} does not match target {tuple(target.shape)}.")
+        loss = F.l1_loss(preds, target)
+        weighted_loss = loss * self.action_cond_loss_weight
+        metrics = {
+            "align/action_cond_loss": loss.detach(),
+            "align/action_cond_loss_weighted": weighted_loss.detach(),
+            "align/action_cond_zero_loss": target.abs().mean(),
+        }
+        if self.action_cond_shuffle_metric and actions.shape[0] > 1:
+            def _roll(x):
+                return None if x is None else x.roll(1, dims=0)
+
+            with torch.no_grad():
+                shuffled = self.action_cond_head(
+                    vlm_tokens, state, _roll(actions), _roll(joint_mask), state_joint_mask, _roll(action_is_pad)
+                )
+                shuffle_loss = F.l1_loss(shuffled, target)
+            metrics["align/action_cond_shuffle_loss"] = shuffle_loss
+            metrics["align/action_cond_shuffle_gap"] = shuffle_loss - loss.detach()
+        return weighted_loss, preds, metrics
+
     def forward(
         self,
         images,
@@ -781,6 +865,9 @@ class FlowMatchingV2(FlowMatchingV1):
         future_video_targets=None,
         future_video_cls_targets=None,
         future_video_current_patch=None,
+        joint_mask=None,
+        state_joint_mask=None,
+        action_is_pad=None,
     ) -> Tensor:
         dtype = state.dtype
         device = state.device
@@ -887,6 +974,20 @@ class FlowMatchingV2(FlowMatchingV1):
                 align_metrics["align/future_video_loss_weighted"] = (loss_video * video_weight).detach()
                 align_metrics["align/video_loss"] = video_total_loss.detach()
                 align_metrics["align/video_loss_weighted"] = loss_future_video.detach()
+            if getattr(self, "use_action_cond", False):
+                loss_action_cond, _, action_cond_metrics = self.action_cond_emb_forward(
+                    outputs_embeds,
+                    state,
+                    actions,
+                    future_video_targets,
+                    future_video_current_patch,
+                    joint_mask=joint_mask,
+                    state_joint_mask=state_joint_mask,
+                    action_is_pad=action_is_pad,
+                )
+                align_metrics.update(action_cond_metrics)
+                # Popped and added to the total loss by LingbotVlaV2Policy.forward; the output tuple keeps its length.
+                align_metrics["_action_cond_loss"] = loss_action_cond
             self.steps += 1
         else:
             loss_depth = 0
@@ -1230,6 +1331,10 @@ class LingbotVlaV2Policy(PreTrainedModel):
     def reset(self):
         return None
 
+    def post_training_new_modules(self) -> List[str]:
+        """Submodules a pretrained checkpoint may lack; post-training initialises them instead of failing."""
+        return ["model.action_cond_head"] if hasattr(self.model, "action_cond_head") else []
+
     def get_optim_params(self) -> dict:
         return self.parameters()
 
@@ -1285,7 +1390,11 @@ class LingbotVlaV2Policy(PreTrainedModel):
             future_video_targets=future_video_targets,
             future_video_cls_targets=future_video_cls_targets,
             future_video_current_patch=future_video_current_patch,
+            joint_mask=joint_mask,
+            state_joint_mask=kwargs.get("state_joint_mask"),
+            action_is_pad=action_is_pad,
         )
+        loss_action_cond = moe_metrics.pop("_action_cond_loss", 0) if moe_metrics else 0
 
         if joint_mask is not None:
             if "repeat" in self.config.loss_type:
@@ -1307,6 +1416,7 @@ class LingbotVlaV2Policy(PreTrainedModel):
             + loss_depth
             + loss_future_depth
             + loss_future_video
+            + loss_action_cond
             + seq_wise_loss
             + router_z_loss
         )

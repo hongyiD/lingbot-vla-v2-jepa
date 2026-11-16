@@ -382,6 +382,7 @@ def main():
     use_depth_align = True if args.train.align_params != {} else False
     use_future_depth = args.train.align_params.get('depth', {}).get('use_future_depth', False)
     use_future_video = use_depth_align and args.train.align_params.get('use_future_video', False)
+    use_action_cond = use_future_video and bool((args.train.align_params.get('action_cond') or {}).get('enabled', False))
     depth_model_type = None
     video_teacher = None
     future_video_loss_weight = 1.0
@@ -745,6 +746,7 @@ def main():
             future_video_cls_targets = None
             future_video_current_dino = None
             future_video_current_rgb, future_video_target_rgb = None, None
+            total_ac_loss, total_ac_shuffle_gap, ac_shuffle_count = 0.0, 0.0, 0
             ignore_batch_num = 0
             torch.cuda.synchronize()
             start_time = time.time()
@@ -843,6 +845,11 @@ def main():
                     total_seq_wise_loss += seq_wise_loss.item()
                 if not (isinstance(router_z_loss, int) or isinstance(router_z_loss, float)):
                     total_router_z_loss += router_z_loss.item() / len(micro_batches)
+                if use_action_cond:
+                    total_ac_loss += loss_log["align/action_cond_loss"].item() / len(micro_batches)
+                    if "align/action_cond_shuffle_gap" in loss_log:
+                        total_ac_shuffle_gap += loss_log["align/action_cond_shuffle_gap"].item()
+                        ac_shuffle_count += 1
                 del micro_batch
             # --- TEMP gate-gradient probe (GATE_GRAD_PROBE=1): dump router gate grad
             # magnitude vs routed-expert grad, plus per-expert symmetry, pre-clip. ---
@@ -900,6 +907,14 @@ def main():
             total_depth_loss = total_depth_loss / depth_loss_weight
             total_future_depth_loss = total_future_depth_loss / future_depth_loss_weight
             total_future_video_loss = total_future_video_loss / future_video_loss_weight
+            ac_str = ""
+            if use_action_cond:
+                total_ac_loss, total_ac_shuffle_gap, ac_shuffle_count = all_reduce(
+                    (total_ac_loss, total_ac_shuffle_gap, ac_shuffle_count), group=get_parallel_state().fsdp_group
+                )
+                ac_str = f"AC_Loss {total_ac_loss:.4f}, "
+                if ac_shuffle_count > 0:
+                    ac_str += f"AC_Shuffle_Gap {total_ac_shuffle_gap / ac_shuffle_count:.5f}, "
             torch.cuda.synchronize()
             delta_time = time.time() - start_time
             all_lrs = lr_scheduler.get_last_lr()
@@ -926,6 +941,7 @@ def main():
                 f"FutureVideo_Loss {total_future_video_loss:.4f}, "
                 f"SeqWise_Loss {total_seq_wise_loss:.4f}, "
                 f"RouterZ_Loss {total_router_z_loss:.4f}, "
+                f"{ac_str}"
                 f"{maxvio_str}"
                 f"{sigmoid_str}"
                 f"GradNorm {grad_norm:.4f}, "

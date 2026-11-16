@@ -1,9 +1,17 @@
 # LingBot-VLA 2.0 × JEPA 视觉教师替换：总体阶段性实施计划
 
-- 版本：v0.1（2026-11-10）
+- 版本：v0.2（2026-11-16）
 - 工作目录：`/Users/hongyizhao/Desktop/具身智能/model/lingbot-vla-v2`（LingBot 官方仓库，`main` @ `be969b8`）
 - 参考资料：`embodiedx/`，即此前在 TAIP B300 上的训练、数据转换和评测环境记录。只读引用，`embodiedx/refs/` 下的代码不改
 - 阶段一的详细执行计划：[`01-stage1-offline-probe.md`](01-stage1-offline-probe.md)
+- 阶段二（改道后）的详细计划：[`02-action-conditioned-prediction.md`](02-action-conditioned-prediction.md)
+
+> **v0.2 改道说明（2026-11-16）。**
+> - 阶段一按预注册标准没有通过 G1：JEPA 特征没有在逆动力学探针上显著优于 DINO-Video。报告见 `research/jepa_probe/reports/stage1_report.md`。
+> - 改为先做"动作条件预测头"：在 VLM 后加一个训练时才用的 head，输入 VLM token、本体状态和动作块，预测 DINO-Video 的"未来 − 当前"特征差。
+> - 新增实验臂 B0（喂零动作）和 B1（喂真动作），主比较是 B1 对 B0。标签的选择依据见 `research/jepa_probe/reports/label_check.md`。
+> - A2/A3（换教师、加 JEPA 教师）暂缓；以后作为"JEPA 标签臂"（B2）的前提条件再评估。
+> - 下文第 0–5 节保留 v0.1 的原始设计。凡与 B 臂相关的内容，以 `02` 文档为准。
 
 ---
 
@@ -24,14 +32,18 @@
 | A1 | LingBot-Depth | 无（模块保留，不算 loss） | 对照：后训练阶段的视频蒸馏本身有没有用 |
 | A2 | LingBot-Depth | V-JEPA（替换 DINO-Video） | 主假设 |
 | A3 | LingBot-Depth | DINO-Video + V-JEPA（新增一个 future head） | 互补假设 |
+| B0 | LingBot-Depth | DINO-Video + 动作条件 head（喂零动作） | v0.2 新增：控制"多一个 head、多一项 loss" |
+| B1 | LingBot-Depth | DINO-Video + 动作条件 head（喂真动作） | v0.2 主假设：预测"动作造成的画面变化"能改善 VLM 表征 |
+
+v0.2 的执行顺序是 A0、B0、B1 先做，A1 随后补上；A2、A3 暂缓。
 
 **阶段总览：**
 
 | 阶段 | 目标 | 闸门（不过就不进下一阶段） | 估计耗时 |
 |---|---|---|---|
 | 0 | 环境、数据、评测链路、基线评测、协议冻结 | G0：评测链路能复现官方 checkpoint 的成绩；A0 基线有数字和噪声估计 | 1–2 周（评测链路是瓶颈） |
-| 1 | 离线探针：不训练 VLA，先比较几种教师特征的信息量 | G1：至少一种 JEPA 变体在逆动力学探针上显著优于 DINO-Video，或与之互补 | 约 1 周（3–5 个夜间 GPU 窗口） |
-| 2 | 代码改造：教师抽象、A1 开关、A3 新 head、回归测试 | G2：A0 路径与 `train_c50_v1` 的 step-1 loss 一致；吞吐开销可接受 | 约 1 周（主要在白天写代码，夜间验证） |
+| 1 | 离线探针：不训练 VLA，先比较几种教师特征的信息量 | G1：至少一种 JEPA 变体在逆动力学探针上显著优于 DINO-Video，或与之互补。**结果：未通过（v0.2 改道）** | 约 1 周（3–5 个夜间 GPU 窗口） |
+| 2 | 代码改造。v0.2：动作条件 head（B0/B1，代码与 CPU 测试已完成）、A1 开关、回归测试；v0.1 的教师抽象和 A3 暂缓 | G2：A0 路径与 `train_c50_v1` 的 step-1 loss 一致；吞吐开销可接受（B 臂的标准见 `02` 文档 4.2 节） | 约 1 周（主要在白天写代码，夜间验证） |
 | 3 | 试点：每个臂短跑 1–2 epoch，校准 loss 权重 | G3：不发散，VLA loss 不劣于 A0 同步数，冒烟评测不崩 | 2–3 夜 |
 | 4 | 主消融：4 臂 × 3 seed，低数据档 | 预注册的统计判定（见 3.4） | 约 11 夜训练 + 评测（见第 4 节） |
 | 5 | 机制分析与扩展消融 | 按阶段四的结论选做 | 2–4 周 |
@@ -59,6 +71,7 @@
 | H2（蒸馏效果） | 把 V-JEPA 作为 `Q_{t+T}` 的蒸馏目标，能提高成功率，randomized 设置提升更明显 | 阶段四：A2 对 A0、A2 对 A1 |
 | H3（互补） | DINO-Video 与 V-JEPA 的目标互补，双教师优于单教师 | 阶段一的拼接探针；阶段四：A3 对 A0 |
 | H0（对照） | 后训练阶段的视频蒸馏本身有贡献 | A0 对 A1。若 A0 ≈ A1，说明后训练里视频教师几乎不起作用，替换教师的收益上限也低，这本身就是重要结论 |
+| H4（动作条件预测，v0.2） | 让 VLM 的输出配合动作块去预测"画面会怎么变"，能提高成功率 | 阶段四：B1 对 B0（主），B1 对 A0（辅）；训练中的打乱动作差值 `AC_Shuffle_Gap` 大于 0 |
 
 **解释时要注意：** 预训练的 6B checkpoint 已经被 DINO-Video 蒸馏过，后训练时换教师抹不掉这段历史。A2 测的是"后训练阶段换教师"的效果，不等于"从头用 JEPA 预训练"。只有阶段七能回答后者。A1 是区分这两种解释的关键对照。
 
@@ -132,6 +145,7 @@
 | A1 | `none` | 0（不构建教师） | DINO-Video 的 query 和 head 全部保留，只是不参与 loss | 省掉教师前向 |
 | A2 | `vjepa2` / `vjepa2_1`（阶段一选定） | 当前 + 未来，权重由阶段三校准 | head 结构不变，从预训练权重继续训练 | 教师前向（阶段一实测） |
 | A3 | `dino_video` + `jepa_aux` | DINO-Video 原样 + JEPA 未来目标 | 新增 1 个 future JEPA head，放在子模块里。读取同一个 `Q_{t+T}`，不新增 prefix token | 两个教师的前向 + 约 30M 参数的新 head |
+| B0 / B1 | `dino_video` | DINO-Video 原样 + 动作条件项：L1 拟合 LN(DINO 未来) − LN(DINO 当前) | 新增 `model.action_cond_head`（约 30M），读顶部相机图像 token、`Q_{t+T}`、状态和动作块。配置 `train.align_params.action_cond`，B0 设 `use_actions: false` | 不增加教师前向；新 head 每步两次前向（一次无梯度的打乱动作诊断） |
 
 A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始化。理由是两种目标形状相同；如果重新初始化，就混入了"head 从零学"这个额外变量。阶段五可以补一个"重新初始化 head"的消融。
 
@@ -180,6 +194,8 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 | A2 对 A1 | V-JEPA 教师是否本身有用 |
 | A0 对 A1 | H0 |
 | A3 对 A0 | H3 |
+| B1 对 B0（v0.2 主比较） | H4 |
+| B1 对 A0 | H4 的净收益 |
 
 判定沿用 `ab_test.py` 的 ADOPT / REJECT / INCONCLUSIVE 规则。如果阶段零测出的评测噪声表明 10 条 episode 不够，就在阶段零按功效分析调高到 20 条，然后再冻结协议。
 
@@ -267,7 +283,11 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 
 ### 阶段 2：代码改造
 
-**任务：**
+**v0.2 状态：**
+- 动作条件 head（B0/B1）的代码、配置开关、加载器的新模块初始化、训练日志项、配置生成和 CPU 单元测试都已完成。改动清单和 Pod 冒烟步骤见 `02` 文档第 3、4 节。
+- 下面第 3 项（A1 开关）仍要做。第 1、2、4、5 项属于换教师路线，暂缓。
+
+**v0.1 的任务：**
 1. 新增 `lingbotvla/models/vla/vision_models/jepa/`。
    - 实现 `VJepaTeacher`，有两个后端：HF 的 `VJEPA2Model`（V-JEPA 2）和官方仓库的 vendored 代码（V-JEPA 2.1）。
    - 接口与 `DinoVideoTeacher.get_future_feature(video, return_cls, return_current, current_index, fps)` 相同，返回 `(future_patches[B,256,1024], current_patches[B,256,1024])`。
@@ -355,8 +375,8 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 |---|---|---|---|
 | Pod 环境与启动函数 | `research/tools/pod/pod.env`：`lb_run`、`smoke_stats`、`step_wall` | 阶段 1–6 | 由 `taip.env` 改来：`LB` 默认取 pod.env 所在的仓库目录（即同步到 PVC 的本仓库，`$D/code/lingbot-vla-v2-jepa`），并放在 `PYTHONPATH` 最前面，覆盖镜像里的旧代码；各变量都可以先 export 覆盖 |
 | 数据读取补丁 | `research/tools/pod/agx_run.py` | 阶段 1–6 | 训练必须带上（`lb_run` 已经内置）；阶段一读标签也照它的做法，不解码图像列 |
-| 配置生成 | `research/tools/pod/make_train_configs.py` | 阶段 2–4 | 要扩展出 `--arm A0..A3`、`--seed`、`--teacher_type` 参数 |
-| 训练指标解析 | `research/tools/pod/train_metrics.py` | 阶段 3–4 | 要加上 `FutureJepa_Loss` 列 |
+| 配置生成 | `research/tools/pod/make_train_configs.py` | 阶段 2–4 | 已有 `--arm A0/B0/B1`、`--seed`、`--ac_weight`；A1 做好后再加；`--teacher_type` 随 A2/A3 暂缓 |
+| 训练指标解析 | `research/tools/pod/train_metrics.py` | 阶段 3–4 | 已解析 `AC_Loss`、`AC_Shuffle_Gap`，`--ac_calibrate` 给出权重建议；`FutureJepa_Loss` 列随 A3 暂缓 |
 | 评测解析与 A/B 判定 | `research/tools/parse_eval_run.py`、`research/tools/ab_test.py` | 阶段 0、3–6 | 新增 `--instruction_types`（默认 `clean=seen,randomized=unseen`），阶段零冻结协议时按协议设置 |
 | 台账 | `research/tools/ledger.py` | 全部阶段 | 默认写到 `research/ledger/` |
 
@@ -384,6 +404,7 @@ lingbot-vla-v2-jepa/          # 个人 GitHub 私有仓库；upstream = Robbyant
 ├── plan/                     # 计划文档（本目录）
 ├── research/
 │   ├── jepa_probe/           # 阶段一的探针脚本
+│   ├── model_tests/          # 模型改动的 CPU 单元测试（阶段二起）
 │   ├── tools/                # 评测解析、A/B 判定、台账（从 embodiedx 迁移）
 │   │   └── pod/              # Pod 环境、数据读取补丁、配置生成、训练指标
 │   └── ledger/               # 本项目台账（ledger.jsonl + ledger.md）
@@ -400,7 +421,7 @@ $D/runs/jepa_<臂>_s<seed>/    # 阶段三、四的训练 run
 $D/reports/jepa/              # 汇总报告
 ```
 
-**命名：** run 名为 `jepa_<A0|A1|A2|A3>_s<seed>[_<变体>]`。配置文件与 run 同名，放在 `$D/configs/`。
+**命名：** run 名为 `jepa_<A0|A1|A2|A3|B0|B1>_s<seed>[_<变体>]`。配置文件与 run 同名，放在 `$D/configs/`。
 
 **台账：** 每次数据变更、训练、评测、A/B 判定和决策都记一条，并附上配置、清单和结果文件的 sha256。
 

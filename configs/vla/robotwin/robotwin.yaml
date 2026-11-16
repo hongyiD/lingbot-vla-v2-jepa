@@ -137,4 +137,18 @@ train:
       cls_loss_weight: 0.2
       log_max_samples: 32
       log_scale: 16
+    # Action-conditioned head (training only): from the top-camera VLM tokens, the future task tokens, the state and
+    # the clean action chunk, predict LN(DINO future) - LN(DINO current) per patch with L1. Needs
+    # video.use_current_patch_loss. use_actions: false feeds zero actions (same head, no action information).
+    action_cond:
+      enabled: false
+      use_actions: true
+      loss_weight: 0.004
+      action_group: 5
+      detach_image_feats: false
+      shuffle_metric: true
+      num_layers: 1
+      num_heads: 4
+      dim_head: 32
+      ff_mult: 1
     visual_steps: 5000

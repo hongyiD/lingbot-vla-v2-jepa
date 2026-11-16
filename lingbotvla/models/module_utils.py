@@ -206,6 +206,26 @@ def _init_parameter(
     module.apply(init_func)
 
 
+def _init_post_training_new_modules(model: "nn.Module", parameter_names: set) -> set:
+    """
+    Initialises the submodules named by `model.post_training_new_modules()` that the checkpoint lacks entirely,
+    with their own `reset_parameters()`, and returns the parameter names that are still missing.
+    """
+    list_new_modules = getattr(model, "post_training_new_modules", None)
+    for module_name in (list_new_modules() if list_new_modules is not None else []):
+        module = model.get_submodule(module_name)
+        names = {f"{module_name}.{name}" for name, _ in module.named_parameters()}
+        missing = names & parameter_names
+        if not missing:
+            continue
+        if missing != names:
+            raise KeyError(f"{module_name} is only partly in the checkpoint, missing {sorted(missing)}.")
+        module.reset_parameters()
+        parameter_names = parameter_names - missing
+        logger.info_rank0(f">>> {module_name} is not in the checkpoint; initialised {len(missing)} new parameters.")
+    return parameter_names
+
+
 def _get_weight_loader(model) -> "VLAWeightLoader":
     from .loader import VLAWeightLoader
     loader_factory = getattr(type(model), "get_weight_loader", None)
@@ -282,6 +302,7 @@ def load_model_weights(
         _dispatch_buffer(model, name, buffer)
 
     if post_training:
+        parameter_names = _init_post_training_new_modules(model, parameter_names)
         assert len(parameter_names) == 0, f"Missing {parameter_names} during Post-Training. This is not allowed!!!"
         if adanorm_time:
             logger.info_rank0(">>> Parameters in AdaNorm has been ZERO initialized.")

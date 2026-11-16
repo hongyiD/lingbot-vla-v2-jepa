@@ -26,12 +26,15 @@ SCRATCH = re.compile(r"Starting training from scratch")
 REACHED = re.compile(TS + r" - INFO - __main__ - Reached max_steps=(\d+)")
 EXC = re.compile(r"^(?:\[rank\d+\]:\s*)?(?:[A-Za-z_][\w.]*\.)?([A-Za-z_]\w*(?:Error|Exception|Interrupt))(?::|\s*$)")
 
-LOSSES = ["Loss", "VLA_Loss", "Depth_Loss", "Future_Depth_Loss", "FutureVideo_Loss", "SeqWise_Loss", "RouterZ_Loss"]
-OTHERS = ["MaxVio", "AvgSigmoid", "GradNorm", "LR", "Expert_LR", "StepTime", "Depth_Forward_Time", "Ignore_Batch_Num"]
+LOSSES = ["Loss", "VLA_Loss", "Depth_Loss", "Future_Depth_Loss", "FutureVideo_Loss", "SeqWise_Loss", "RouterZ_Loss",
+          "AC_Loss"]
+OTHERS = ["AC_Shuffle_Gap", "MaxVio", "AvgSigmoid", "GradNorm", "LR", "Expert_LR", "StepTime", "Depth_Forward_Time",
+          "Ignore_Batch_Num"]
 KEYS = LOSSES + OTHERS
 SHORT = {"Loss": "Loss", "VLA_Loss": "VLA", "Depth_Loss": "Depth", "Future_Depth_Loss": "FutD",
-         "FutureVideo_Loss": "FutV", "SeqWise_Loss": "SeqW", "RouterZ_Loss": "RtrZ", "MaxVio": "MaxVio",
-         "AvgSigmoid": "AvgSig", "GradNorm": "Grad", "LR": "LR", "StepTime": "StepT"}
+         "FutureVideo_Loss": "FutV", "SeqWise_Loss": "SeqW", "RouterZ_Loss": "RtrZ", "AC_Loss": "AC",
+         "AC_Shuffle_Gap": "ACgap", "MaxVio": "MaxVio", "AvgSigmoid": "AvgSig", "GradNorm": "Grad", "LR": "LR",
+         "StepTime": "StepT"}
 
 
 def ts(s):
@@ -53,6 +56,8 @@ def fmt(v, key):
         return "-"
     if key in ("LR", "Expert_LR"):
         return f"{v:.2e}"
+    if key == "AC_Shuffle_Gap":
+        return f"{v:.5f}"
     if key in ("StepTime", "Depth_Forward_Time", "GradNorm", "MaxVio", "AvgSigmoid"):
         return f"{v:.3f}"
     return f"{v:.4f}"
@@ -122,6 +127,10 @@ def main(argv=None):
     ap.add_argument("--bin", type=int, default=500)
     ap.add_argument("--ckpt_dir")
     ap.add_argument("--csv")
+    ap.add_argument("--ac_calibrate", type=int, default=0, metavar="N",
+                    help="suggest action_cond.loss_weight from the first N steps (needs AC_Loss in the log)")
+    ap.add_argument("--video_weight", type=float, default=0.004,
+                    help="align_params.video.future_video_loss_weight of the run, for --ac_calibrate")
     a = ap.parse_args(argv)
 
     logs = []
@@ -188,13 +197,27 @@ def main(argv=None):
     table(f"every {a.bin} steps (mean; StepTime median)", bins, main_keys)
     table("small terms by epoch", [(f"ep{e}", [r for r in rows if r["epoch"] == e]) for e in epochs],
           ["SeqWise_Loss", "RouterZ_Loss", "AvgSigmoid", "Depth_Forward_Time"])
+    has_ac = any("AC_Loss" in r for r in rows)
+    if has_ac:
+        table(f"action-conditioned head, every {a.bin} steps (AC = unweighted L1, ACgap = shuffled - true)", bins,
+              ["AC_Loss", "AC_Shuffle_Gap", "FutureVideo_Loss", "VLA_Loss"])
 
     def seg(lo, hi, k="VLA_Loss"):
         return mean([r.get(k) for r in rows if lo < r["step"] <= hi])
 
+    if a.ac_calibrate:
+        ac0, fv0 = seg(0, a.ac_calibrate, "AC_Loss"), seg(0, a.ac_calibrate, "FutureVideo_Loss")
+        if not has_ac or not ac0 or fv0 is None:
+            print(f"\n# ac_calibrate: no AC_Loss / FutureVideo_Loss in the first {a.ac_calibrate} steps")
+        else:
+            w1 = fv0 * a.video_weight / ac0
+            print(f"\n# ac_calibrate over steps 1-{a.ac_calibrate}: FutureVideo_Loss {fv0:.4f} x {a.video_weight} "
+                  f"= {fv0 * a.video_weight:.3e}, AC_Loss {ac0:.4f}")
+            print(f"  loss_weight giving the same weighted size: 0.5x {0.5 * w1:.3e}, 1x {w1:.3e}, 2x {2 * w1:.3e}")
+
     end = steps[-1]
     print("\n# trend")
-    for k in ["Loss", "VLA_Loss", "Depth_Loss", "Future_Depth_Loss", "FutureVideo_Loss"]:
+    for k in ["Loss", "VLA_Loss", "Depth_Loss", "Future_Depth_Loss", "FutureVideo_Loss"] + (["AC_Loss"] if has_ac else []):
         first, last = seg(0, 100, k), seg(end - 100, end, k)
         tail = [seg(end - 1500, end - 1000, k), seg(end - 1000, end - 500, k), seg(end - 500, end, k)]
         if None in tail or first is None or last is None:

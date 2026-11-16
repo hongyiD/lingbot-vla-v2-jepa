@@ -8,6 +8,12 @@ official file (global 1024 = micro 32 x 32 GPUs) fails as-is on 4 GPUs. Every co
   python make_train_configs.py smoke                       # S1, S2, S3, S3b, S3c, S5 into $D/configs
   python make_train_configs.py smoke --train_list $D/lists/pilot.txt
   python make_train_configs.py formal --name train_c50_v1 --micro_batch 32 --accum 2 --max_steps 12000 --save_steps 3000
+  python make_train_configs.py smoke --arm B1               # the same smoke set with the arm applied, *_b1.yaml
+  python make_train_configs.py formal --arm B1 --seed 43 --ac_weight 0.002 --micro_batch 64 --accum 1 \
+      --max_steps 10735 --save_steps 2147                   # name defaults to jepa_B1_s43
+
+Arms: A0 is the official recipe. B0 and B1 add the action-conditioned head (align_params.action_cond), fed zero
+actions (B0) or the true action chunk (B1).
 
 Paths default to the pod.env variables D, W, CFG, LB; --no_check skips the existence checks.
 """
@@ -22,6 +28,7 @@ from pathlib import Path
 import yaml
 
 ROBOT = "robotwin_c50"
+ARMS = ("A0", "B0", "B1")
 
 
 def _env_path(name: str) -> Path | None:
@@ -64,6 +71,20 @@ def variant(base: dict, gpus: int, micro: int, accum: int, max_steps: int, outpu
     return cfg
 
 
+def apply_arm(cfg: dict, arm: str, ac_weight: float | None = None) -> dict:
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}, expected one of {ARMS}")
+    if arm == "A0" and ac_weight is not None:
+        raise ValueError("--ac_weight only applies to the B arms")
+    ac = cfg["train"]["align_params"].setdefault("action_cond", {})
+    ac["enabled"] = arm != "A0"
+    if arm != "A0":
+        ac["use_actions"] = arm == "B1"
+        if ac_weight is not None:
+            ac["loss_weight"] = ac_weight
+    return cfg
+
+
 def smoke_configs(base: dict, smoke_dir: Path) -> dict[str, tuple[int, dict]]:
     reference = dict(train={"use_compile": False, "attention_implementation": "eager"},
                      model={"vit_attn_implementation": "sdpa"}, video={"attention_mode": "sdpa_block_causal"})
@@ -86,7 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--work", type=Path, default=_env_path("D"), help="work PVC root (configs/, smoke/, runs/)")
     ap.add_argument("--train_list", type=Path, default=None, help="default: <work>/lists/train_c50.txt")
     ap.add_argument("--out_dir", type=Path, default=None, help="default: <work>/configs")
-    ap.add_argument("--name", default=None, help="formal: config name, also the run directory name")
+    ap.add_argument("--name", default=None,
+                    help="formal: config name, also the run directory name (default with --arm: jepa_<arm>_s<seed>)")
+    ap.add_argument("--arm", choices=ARMS, default=None, help="experiment arm; omitted = A0 without renaming")
+    ap.add_argument("--seed", type=int, default=None, help="train.seed (LingBot default 42)")
+    ap.add_argument("--ac_weight", type=float, default=None, help="B arms: align_params.action_cond.loss_weight")
     ap.add_argument("--gpus", type=int, default=4, help="formal: GPUs the run will use")
     ap.add_argument("--micro_batch", type=int, default=None)
     ap.add_argument("--accum", type=int, default=None)
@@ -102,9 +127,19 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out_dir or args.work / "configs"
     base = base_config(args.lingbot_root, args.weights, args.cfg, train_list)
 
+    arm = args.arm or "A0"
+    if args.ac_weight is not None and arm == "A0":
+        ap.error("--ac_weight only applies to --arm B0/B1")
     if args.mode == "smoke":
         configs = smoke_configs(base, args.work / "smoke")
+        if arm != "A0":
+            suffix = arm.lower()
+            for _, cfg in configs.values():
+                cfg["train"]["output_dir"] += f"_{suffix}"
+            configs = {f"{name}_{suffix}": entry for name, entry in configs.items()}
     else:
+        if args.name is None and args.arm is not None:
+            args.name = f"jepa_{arm}_s{42 if args.seed is None else args.seed}"
         needed = ("name", "micro_batch", "accum", "max_steps", "save_steps")
         missing = [f"--{k}" for k in needed if getattr(args, k) is None]
         if missing:
@@ -112,6 +147,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg = variant(base, args.gpus, args.micro_batch, args.accum, args.max_steps, args.work / "runs" / args.name,
                       train={"save_steps": args.save_steps})
         configs = {args.name: (args.gpus, cfg)}
+    for _, cfg in configs.values():
+        apply_arm(cfg, arm, args.ac_weight)
+        if args.seed is not None:
+            cfg["train"]["seed"] = args.seed
 
     if not args.no_check:
         absent = missing_inputs(base)
@@ -124,8 +163,11 @@ def main(argv: list[str] | None = None) -> int:
         assert t["global_batch_size"] == t["micro_batch_size"] * gpus * t["gradient_accumulation_steps"]
         path = out_dir / f"{name}.yaml"
         path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        ac = t["align_params"].get("action_cond") or {}
+        arm_note = (f", action_cond use_actions={ac['use_actions']} weight={ac.get('loss_weight')}"
+                    if ac.get("enabled") else "")
         print(f"{path}: {gpus} GPU x mb {t['micro_batch_size']} x accum {t['gradient_accumulation_steps']} = "
-              f"global {t['global_batch_size']}, max_steps {t['max_steps']}, output_dir {t['output_dir']}")
+              f"global {t['global_batch_size']}, max_steps {t['max_steps']}, output_dir {t['output_dir']}{arm_note}")
     return 0
 
 
