@@ -162,7 +162,17 @@ B1 与 B0 只差"head 看不看得到动作"，其余完全一样（同样的参
 
 Triton 和 grouped-GEMM 内核在 macOS 上导入不了，测试的 `conftest.py` 用替身模块绕过。这些测试不调用任何 GPU 内核。完整模型的前向和反向只能在 Pod 上验证（4.2）。
 
-### 4.2 Pod 冒烟（下一步）
+### 4.2 Pod 冒烟（2026-11-16 完成，通过）
+
+结果：
+- A0 回归：step-1 的 Depth / Future_Depth / FutureVideo / VLA 四项与 S3b 一字不差。
+- B1：30 步无非有限值；step-1 三项蒸馏 loss 与 A0 一致；StepTime 3.38 s（S3b 3.36 s，新 A0 3.60 s，差异是机器波动）。
+- 第 1 步 `AC_Loss` = `zero_loss` = 0.6133。到第 30 步，`AC_Loss / zero_loss` 降到 0.987。`AC_Shuffle_Gap` 从 0 单调涨到约 2e-6：head 在学，也开始用动作，只是起步慢（输出层零初始化，Muon 每步更新很小）。
+- 权重校准（前 10 步）：1 倍档 3.9e-3，和占位值 0.004 基本一致。
+- 注意：日志和 TensorBoard 里的 loss 数值是 bf16 精度（约 0.6 附近每格 0.0039）。`AC_Loss / zero_loss` 要用多步平均来看。gap 本身是在转换前相减的，不受影响。
+- TensorBoard 的 `EventAccumulator` 在 Pod 上和 numpy 2 不兼容，要用 `tensorboard.compat.proto.event_pb2` 直接解析事件文件。
+
+原始命令：
 
 代码照旧用 `git archive` 打包上传，然后在 Pod 里：
 
@@ -197,6 +207,8 @@ python research/tools/pod/train_metrics.py $D/smoke/s3b_b1.log --bin 10 --ac_cal
 ### 4.3 试点（阶段三）
 
 - B1 × 3 档权重，B0 × 选定权重，各 seed 42、1 个 epoch（2147 步，约 2.2 小时）。一夜能排 3–4 个。
+- 为了一夜排完，B0 先用 1 倍档 0.004。顺序：B1@0.004 → B0@0.004 → B1@0.002 → B1@0.008，最关键的对比最先出结果。B1 最后选了别的档，再补一个同权重的 B0。
+- `max_steps` 设成 2147，lr 余弦在 1 个 epoch 内走完，和 `train_c50_v1` 的调度不同。所以 VLA loss 主要和同一批试点里的 B0 比，和 `train_c50_v1` 的对比只作参考。
 - 看：`AC_Loss` 相对 `zero_loss` 下降多少；`AC_Shuffle_Gap` 是否稳定大于 0；VLA loss 与 `train_c50_v1` 同步数对比；1 个 epoch 的 checkpoint 冒烟评测（50 个任务 × 2 条 × 2 个设置）。
 - 按 2.5 节的提前止损规则决定是否进主消融。
 
