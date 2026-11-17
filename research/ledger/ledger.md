@@ -1,7 +1,7 @@
 # Experiment ledger
 
-- entries: 4, submissions: 0
-- rendered: 2026-11-11T09:48:48+08:00 (source of truth: ledger.jsonl)
+- entries: 10, submissions: 0
+- rendered: 2026-11-17T15:26:57+08:00 (source of truth: ledger.jsonl)
 
 | id | time | kind | title | fields | hashes |
 |---|---|---|---|---|---|
@@ -9,3 +9,9 @@
 | 2 | 2026-11-11T09:48:48+08:00 | data | T1.1 V-JEPA 2.1 ViT-L checkpoint downloaded | bytes=5151198524, keys=encoder,predictor,opt,scaler,ema_encoder,epoch,loss,batch_size,world_size,lr, path=$D/weights/vjepa/vjepa2_1_vitl_dist_vitG_384.pt, sha256=7ea9b7cb4a75d10644a8a8d42cff9e177b10dca8f02173f0eaf2b0bed82838c6 |  |
 | 3 | 2026-11-11T09:48:48+08:00 | data | T1.1 V-JEPA 2.1 ema_encoder extracted | bytes=1218821403, params_M=304.68, path=$D/weights/vjepa/vjepa2_1_vitl_384_ema_encoder.pt, sha256=e8caa8771efcfec4f5db6b6be490cd2754c7c14deef3f746157aaec697427574, tensors=302 |  |
 | 4 | 2026-11-11T09:48:48+08:00 | data | T1.1 vjepa2 source snapshot and timm | commit=204698b45b3712590f06245fbfba32d3be539812, src=$D/weights/vjepa/vjepa2-src, tar.sha256=e7e9c554c67e72c2c6884d751f4731bbf25d0d203b01d4b367b5157371b13ee1, timm=1.0.15 in $D/pylib (--no-deps) |  |
+| 5 | 2026-11-17T15:26:57+08:00 | decision | Stage 1 offline probes: G1 not passed; v0.2 switches to action-conditioned prediction | plan=plan/01-stage1-offline-probe.md, report=research/jepa_probe/reports/stage1_report.md | stage1_report.md:197fb6776d |
+| 6 | 2026-11-17T15:26:57+08:00 | note | Label check: DINO future-minus-current chosen as the action-conditioned target | caveat=4x4 grid PCA256 frozen features, dino_delta_dR2=0.0612, v21_delta_dR2=0.0675, v21_minus_dino_CI=[-0.0001,+0.0106] n.s. | label_check.md:49d88fb83c |
+| 7 | 2026-11-17T15:26:57+08:00 | run | Stage 2 Pod smoke: A0 regression and B1 (image_future context), 4 GPU x mb64, 30 steps | A0_step1=identical_to_S3b, B1_StepTime=3.38s, B1_step1_AC_eq_zero_loss=0.6133, G2=pass, calib_1x_weight=3.9e-3, commit=801a3d9 |  |
+| 8 | 2026-11-17T15:26:57+08:00 | run | Pilot 1 (image_future context), seed 42, 2147 steps: B0@0.004, B1@0.002/0.004/0.008 | B1w004_gap=1.24e-2, B1w004_minus_B0_ACzero_last1000=-0.0003+-0.0002, VLA_rel_diff_max=0.3%, commit=801a3d9, runs=pilot_B0_w004 pilot_B1_w002 pilot_B1_w004 pilot_B1_w008, verdict=actions give no gain at matched weight |  |
+| 9 | 2026-11-17T15:26:57+08:00 | run | Pilot 2 (image context), seed 42, 2147 steps: B1@0.004, B0@0.004 | B1_gap=4.6e-2, B1_minus_B0_ACzero_last1000=-0.0000+-0.0002, VLA_rel_diff=-0.14%+-0.05%, commit=56e49f1, image_vs_image_future_ACzero=B0 +0.0245, B1 +0.0248, runs=pilot2_B1_img pilot2_B0_img, verdict=not passed; future tokens were not the shortcut |  |
+| 10 | 2026-11-17T15:26:57+08:00 | decision | Close the action-conditioned head line (B0/B1) before the main ablation | next=re-prioritise the overall plan, plan=plan/02-action-conditioned-prediction.md, reason=B1 = B0 in AC loss and VLA loss in both pilots; likely the VLA image tokens already encode the expert action (deterministic demos), so the action input is redundant | 02-action-conditioned-prediction.md:74774b779a |
