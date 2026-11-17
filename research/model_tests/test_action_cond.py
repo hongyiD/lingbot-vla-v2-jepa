@@ -97,9 +97,10 @@ class FakeFlowMatching(nn.Module):
 
     action_cond_emb_forward = FlowMatchingV2.action_cond_emb_forward
 
-    def __init__(self, use_actions=True, weight=0.5, detach=False, shuffle=True):
+    def __init__(self, use_actions=True, weight=0.5, detach=False, shuffle=True, context="image_future"):
         super().__init__()
         self.llm_image_token_size = 2
+        self.action_cond_context = context
         self.action_cond_loss_weight = weight
         self.action_cond_detach_image_feats = detach
         self.action_cond_shuffle_metric = shuffle
@@ -150,6 +151,20 @@ def test_image_tokens_are_the_top_camera_span_and_detach_works():
         assert (image_grad == 0) == detach
         assert h.grad[:, 0].abs().sum() == 0 and h.grad[:, 1 + IMAGE_TOKENS:-2].abs().sum() == 0
         assert h.grad[:, -2:].abs().sum() > 0
+
+
+def test_image_context_ignores_future_task_tokens():
+    hidden, state, actions, fut, cur = prefix_batch()
+    model = FakeFlowMatching(context="image")
+    randomize_output(model.action_cond_head)
+    h = hidden.clone().requires_grad_(True)
+    weighted, preds, _ = model.action_cond_emb_forward(h, state, actions, fut, cur)
+    weighted.backward()
+    assert h.grad[:, 1:1 + IMAGE_TOKENS].abs().sum() > 0
+    assert h.grad[:, -2:].abs().sum() == 0
+    moved = hidden.clone()
+    moved[:, -2:] += 5.0
+    assert torch.allclose(preds, model.action_cond_emb_forward(moved, state, actions, fut, cur)[1])
 
 
 def train_on_action_dependent_target(use_actions, steps=150):
@@ -242,11 +257,14 @@ def test_init_requires_dino_current_and_future_targets():
     fake = types.SimpleNamespace(use_future_video=True, use_current_video_patch=False)
     with pytest.raises(ValueError, match="use_current_patch_loss"):
         FlowMatchingV2.init_action_cond_head(fake, {"action_cond": {"enabled": True}})
+    fake = types.SimpleNamespace(use_future_video=True, use_current_video_patch=True)
+    with pytest.raises(ValueError, match="context"):
+        FlowMatchingV2.init_action_cond_head(fake, {"action_cond": {"enabled": True, "context": "future"}})
 
 
 def test_official_yaml_keeps_the_head_off():
     cfg = yaml.safe_load((ROOT / "configs/vla/robotwin/robotwin.yaml").read_text())
     align = cfg["train"]["align_params"]
-    assert align["action_cond"]["enabled"] is False
+    assert align["action_cond"]["enabled"] is False and align["action_cond"]["context"] == "image"
     assert align["video"]["use_current_patch_loss"] is True
     assert 50 % align["action_cond"]["action_group"] == 0, "LingBot's chunk is 50 steps"

@@ -781,6 +781,11 @@ class FlowMatchingV2(FlowMatchingV1):
         ac_cfg = config["action_cond"]
         video_cfg = dict(config.get("depth", {}))
         video_cfg.update(config.get("video", {}))
+        self.action_cond_context = str(ac_cfg.get("context", "image_future"))
+        if self.action_cond_context not in ("image", "image_future"):
+            raise ValueError(
+                f"align_params.action_cond.context must be 'image' or 'image_future', got {self.action_cond_context!r}."
+            )
         self.action_cond_loss_weight = float(ac_cfg.get("loss_weight", 0.004))
         self.action_cond_detach_image_feats = bool(ac_cfg.get("detach_image_feats", False))
         self.action_cond_shuffle_metric = bool(ac_cfg.get("shuffle_metric", True))
@@ -816,6 +821,9 @@ class FlowMatchingV2(FlowMatchingV1):
         With `shuffle_metric` the loss is also computed, without gradient, with the action chunks rolled by one sample
         inside the batch; `align/action_cond_shuffle_gap` > 0 means the head uses the actions. This runs every step
         rather than on a step counter, which would make the compiled forward branch on a Python int.
+
+        `context="image"` feeds only the top-camera image tokens. The future task tokens are distilled towards the
+        DINO future features, so with `"image_future"` the head can read the change off them without the actions.
         """
         if future_video_targets is None or future_video_current_patch is None:
             raise ValueError("action_cond needs future_video_targets and future_video_current_patch.")
@@ -823,7 +831,10 @@ class FlowMatchingV2(FlowMatchingV1):
         image_embs = hidden_states[:, 1 : chunk_size + 1, :]
         if self.action_cond_detach_image_feats:
             image_embs = image_embs.detach()
-        vlm_tokens = torch.cat([image_embs, self._future_video_patch_task_tokens(hidden_states)], dim=1)
+        if self.action_cond_context == "image_future":
+            vlm_tokens = torch.cat([image_embs, self._future_video_patch_task_tokens(hidden_states)], dim=1)
+        else:
+            vlm_tokens = image_embs
         target = teacher_delta_target(future_video_targets, future_video_current_patch)
         preds = self.action_cond_head(vlm_tokens, state, actions, joint_mask, state_joint_mask, action_is_pad)
         if preds.shape != target.shape:

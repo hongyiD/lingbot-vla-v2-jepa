@@ -143,6 +143,7 @@ train:
     action_cond:
       enabled: false
       use_actions: true
+      context: image
       loss_weight: 0.004
       action_group: 5
       detach_image_feats: false

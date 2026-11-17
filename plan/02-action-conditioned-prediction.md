@@ -50,9 +50,11 @@
 
 **位置：** `lingbotvla/models/vla/vision_models/align_heads/action_cond_head.py`（`ActionConditionedHead`），由 `FlowMatchingV2.init_action_cond_head` 构建，挂在 `model.action_cond_head`。
 
-**输入（拼成一个上下文序列，约 83 个 token，每个 2560 维）：**
+**输入（拼成一个上下文序列，每个 token 2560 维）：** 由 `context` 配置项决定。
+- `image`：75 个 token，即下面的第 1、3、4 项。这是 2026-11-17 试点之后的默认设置。
+- `image_future`：83 个 token，四项都有。这是第一轮试点用的设计。它让 head 绕过了动作（见 4.3 节），只为复现旧结果保留。
 1. VLM 输出的顶部相机 64 个图像 token。默认不 detach，梯度回到 VLM。
-2. VLM 输出的 8 个未来 task token（`Q_{t+T}`，与现有 future head 读的是同一段）。
+2. （仅 `image_future`）VLM 输出的 8 个未来 task token（`Q_{t+T}`，与现有 future head 读的是同一段）。
 3. 1 个本体状态 token：`Linear(55 → 2560)`，无效关节置零。
 4. 10 个动作 token：50 步的干净动作块（不加噪声），每 5 步拼成一个 275 维向量，经 `Linear(275 → 2560)`，再加可学习的时间位置嵌入。无效关节和 episode 末尾补齐的步都置零。
 
@@ -113,7 +115,7 @@ B1 与 B0 只差"head 看不看得到动作"，其余完全一样（同样的参
 | `configs/vla/robotwin/robotwin.yaml` | 新增 `train.align_params.action_cond`，默认 `enabled: false` |
 | `research/tools/pod/make_train_configs.py` | `--arm A0/B0/B1`、`--seed`、`--ac_weight`；formal 模式的默认名为 `jepa_<臂>_s<seed>`；smoke 模式带 `--arm` 时文件名和输出目录加 `_b0` / `_b1` 后缀 |
 | `research/tools/pod/train_metrics.py` | 解析 `AC_Loss`、`AC_Shuffle_Gap`；`--ac_calibrate N` 给出 loss 权重建议 |
-| `research/model_tests/`、`research/tools/tests/test_pod_configs.py` | CPU 单元测试，共 17 个（见第 4 节） |
+| `research/model_tests/`、`research/tools/tests/test_pod_configs.py` | CPU 单元测试，共 18 个（见第 4 节） |
 
 **守住的约束（来自总计划 2 节的"已知的坑"）：**
 - 输出元组长度不变（仍是 11）。新 loss 通过一个私有键 `_action_cond_loss` 交给 `LingbotVlaV2Policy.forward`，在那里取出并加进总 loss。`FutureVideo_Loss` 的含义不变。
@@ -127,9 +129,10 @@ B1 与 B0 只差"head 看不看得到动作"，其余完全一样（同样的参
 |---|---|---|
 | `enabled` | false | 打开 head |
 | `use_actions` | true | false 即 B0，喂零动作 |
+| `context` | `image`（官方 yaml）；代码里不写时是 `image_future` | `image` 只读当前图像 token；`image_future` 再加 8 个未来 task token。代码默认值保证旧配置能原样复现 |
 | `loss_weight` | 0.004 | 占位值。试点前按 3.1 节校准 |
 | `action_group` | 5 | 每几步动作合成一个 token，要能整除 50 |
-| `detach_image_feats` | false | true 时梯度不经图像 token 回到 VLM（只经未来 task token） |
+| `detach_image_feats` | false | true 时梯度不经图像 token 回到 VLM。`image_future` 下只经未来 task token 回传；`image` 下完全不回传，head 只是一个探针 |
 | `shuffle_metric` | true | 每步计算打乱动作诊断 |
 | `num_layers` / `num_heads` / `dim_head` / `ff_mult` | 1 / 4 / 32 / 1 | 不写时沿用 video head 的设置 |
 
@@ -148,12 +151,12 @@ B1 与 B0 只差"head 看不看得到动作"，其余完全一样（同样的参
 ### 4.1 本地测试（已完成）
 
 在一个干净的 CPU 环境（torch 2.8、transformers 4.57.3）里：
-- `research/model_tests/test_action_cond.py`，13 个测试：
+- `research/model_tests/test_action_cond.py`，14 个测试：
   - 目标公式；
   - 输出形状，以及第一步输出全零；
   - 无效关节和补齐步不影响输出，B0 对动作完全不敏感；
   - 梯度能回到 VLM token，`detach_image_feats` 的效果；
-  - 图像 token 取的是顶部相机那一段；
+  - 图像 token 取的是顶部相机那一段；`context: image` 时未来 task token 既不影响输出也拿不到梯度，非法取值报错；
   - 一个小型合成任务上训练 150 步：B1 的 shuffle gap 明显大于 0，B0 恒为 0；
   - 元组长度不变，新 loss 被加进总 loss；
   - 加载器的初始化，只缺一部分参数时报错；
@@ -228,6 +231,19 @@ python research/tools/pod/train_metrics.py $D/smoke/s3b_b1.log --bin 10 --ac_cal
 - 但同权重下，B1 对 B0 的预测误差只差 −0.0003，基本为 0：真动作几乎没帮上忙。`gap` 反映的主要是"别人的动作会误导它"。B1@0.002 和 B1@0.008 对 B0 的差别主要来自权重不同（权重大，VLM 被这个目标训练得更多），不能算到动作头上。
 - 最可能的原因：head 的上下文里有 8 个未来 task token。它们被 DINO 未来特征蒸馏训练过（`FutureVideo_Loss`），本身就是 VLM 对未来画面的预测。head 用"未来 token − 当前图像 token"就能拿到大部分变化量，不需要动作。`vlm_causal: true` 下图像 token 在序列最前面，看不到这些未来 token，所以只去掉未来 token 就能切断这条捷径。
 - 结论：按现在的设计进主消融，B1 对 B0 大概率测不出差别。先改上下文再试点。
+
+**第二轮试点（`context: image`）：**
+- B1 和 B0 各 1 个 epoch，权重 0.004，seed 42。一夜约 5 小时。
+- 预期：B0 只剩当前画面，`AC/zero` 应明显高于第一轮的 0.558；B1 对 B0 的差距拉开。
+- 判定：后 1000 步配对比较，B1 对 B0 的 `AC/zero` 差 ≤ −0.01，并且远大于标准误，才进主消融。标签检验估计这个标签里"只有知道动作才能预测"的部分约占 6% 的方差（ΔR² 0.061），所以差距不会太大。
+- 如果仍然达不到：考虑 margin loss，或者换细粒度标签（第 5、6 节）。
+
+```bash
+for arm in B1 B0; do
+  python research/tools/pod/make_train_configs.py formal --arm $arm --seed 42 --ac_weight 0.004 --ac_context image \
+      --name pilot2_${arm}_img --micro_batch 64 --accum 1 --max_steps 2147 --save_steps 2147
+done
+```
 
 ### 4.4 主消融（阶段四）
 

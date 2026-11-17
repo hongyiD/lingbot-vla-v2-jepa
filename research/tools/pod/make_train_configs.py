@@ -13,7 +13,8 @@ official file (global 1024 = micro 32 x 32 GPUs) fails as-is on 4 GPUs. Every co
       --max_steps 10735 --save_steps 2147                   # name defaults to jepa_B1_s43
 
 Arms: A0 is the official recipe. B0 and B1 add the action-conditioned head (align_params.action_cond), fed zero
-actions (B0) or the true action chunk (B1).
+actions (B0) or the true action chunk (B1). --ac_context image_future reproduces the 2026-11-17 pilot, whose head
+also read the future task tokens.
 
 Paths default to the pod.env variables D, W, CFG, LB; --no_check skips the existence checks.
 """
@@ -71,17 +72,19 @@ def variant(base: dict, gpus: int, micro: int, accum: int, max_steps: int, outpu
     return cfg
 
 
-def apply_arm(cfg: dict, arm: str, ac_weight: float | None = None) -> dict:
+def apply_arm(cfg: dict, arm: str, ac_weight: float | None = None, ac_context: str | None = None) -> dict:
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}, expected one of {ARMS}")
-    if arm == "A0" and ac_weight is not None:
-        raise ValueError("--ac_weight only applies to the B arms")
+    if arm == "A0" and (ac_weight is not None or ac_context is not None):
+        raise ValueError("--ac_weight and --ac_context only apply to the B arms")
     ac = cfg["train"]["align_params"].setdefault("action_cond", {})
     ac["enabled"] = arm != "A0"
     if arm != "A0":
         ac["use_actions"] = arm == "B1"
         if ac_weight is not None:
             ac["loss_weight"] = ac_weight
+        if ac_context is not None:
+            ac["context"] = ac_context
     return cfg
 
 
@@ -112,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--arm", choices=ARMS, default=None, help="experiment arm; omitted = A0 without renaming")
     ap.add_argument("--seed", type=int, default=None, help="train.seed (LingBot default 42)")
     ap.add_argument("--ac_weight", type=float, default=None, help="B arms: align_params.action_cond.loss_weight")
+    ap.add_argument("--ac_context", choices=("image", "image_future"), default=None,
+                    help="B arms: align_params.action_cond.context (default: the official yaml's, image)")
     ap.add_argument("--gpus", type=int, default=4, help="formal: GPUs the run will use")
     ap.add_argument("--micro_batch", type=int, default=None)
     ap.add_argument("--accum", type=int, default=None)
@@ -128,8 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     base = base_config(args.lingbot_root, args.weights, args.cfg, train_list)
 
     arm = args.arm or "A0"
-    if args.ac_weight is not None and arm == "A0":
-        ap.error("--ac_weight only applies to --arm B0/B1")
+    if (args.ac_weight is not None or args.ac_context is not None) and arm == "A0":
+        ap.error("--ac_weight and --ac_context only apply to --arm B0/B1")
     if args.mode == "smoke":
         configs = smoke_configs(base, args.work / "smoke")
         if arm != "A0":
@@ -148,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
                       train={"save_steps": args.save_steps})
         configs = {args.name: (args.gpus, cfg)}
     for _, cfg in configs.values():
-        apply_arm(cfg, arm, args.ac_weight)
+        apply_arm(cfg, arm, args.ac_weight, args.ac_context)
         if args.seed is not None:
             cfg["train"]["seed"] = args.seed
 
@@ -164,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
         path = out_dir / f"{name}.yaml"
         path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
         ac = t["align_params"].get("action_cond") or {}
-        arm_note = (f", action_cond use_actions={ac['use_actions']} weight={ac.get('loss_weight')}"
+        arm_note = (f", action_cond use_actions={ac['use_actions']} weight={ac.get('loss_weight')} "
+                    f"context={ac.get('context', 'image_future')}"
                     if ac.get("enabled") else "")
         print(f"{path}: {gpus} GPU x mb {t['micro_batch_size']} x accum {t['gradient_accumulation_steps']} = "
               f"global {t['global_batch_size']}, max_steps {t['max_steps']}, output_dir {t['output_dir']}{arm_note}")

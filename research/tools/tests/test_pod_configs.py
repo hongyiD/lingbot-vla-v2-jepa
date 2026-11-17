@@ -37,9 +37,12 @@ def test_formal_arms(tmp_path):
     assert t["seed"] == 43 and t["output_dir"].endswith("runs/jepa_B1_s43")
     ac = t["align_params"]["action_cond"]
     assert ac["enabled"] is True and ac["use_actions"] is True and ac["loss_weight"] == 0.002
+    assert ac["context"] == "image"
 
-    b0 = run(tmp_path, "formal", "--arm", "B0", *FORMAL)["jepa_B0_s42"]["train"]["align_params"]["action_cond"]
+    b0 = run(tmp_path, "formal", "--arm", "B0", "--ac_context", "image_future", *FORMAL)
+    b0 = b0["jepa_B0_s42"]["train"]["align_params"]["action_cond"]
     assert b0["enabled"] is True and b0["use_actions"] is False and b0["loss_weight"] == 0.004
+    assert b0["context"] == "image_future"
 
     a0 = run(tmp_path, "formal", "--name", "train_c50_v1", *FORMAL)["train_c50_v1"]["train"]
     assert a0["align_params"]["action_cond"]["enabled"] is False and "seed" not in a0
@@ -57,6 +60,8 @@ def test_smoke_arm_suffixes_names_and_dirs(tmp_path):
 def test_ac_weight_needs_a_b_arm(tmp_path):
     with pytest.raises(SystemExit):
         run(tmp_path, "formal", "--name", "x", "--ac_weight", "0.01", *FORMAL)
+    with pytest.raises(SystemExit):
+        run(tmp_path, "formal", "--name", "x", "--ac_context", "image", *FORMAL)
     with pytest.raises(ValueError):
         mtc.apply_arm({"train": {"align_params": {}}}, "A2")
 
