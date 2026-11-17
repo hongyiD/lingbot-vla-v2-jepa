@@ -385,7 +385,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 | 资产 | 位置 | 用在哪 | 说明 |
 |---|---|---|---|
 | 训练镜像 | `embodiedx/docker/lingbotvla/`（含 Dockerfile、`build_image.sh`、`check_image.sh`） | 全部阶段 | 尽量不重新打镜像；需要新依赖时装到 PVC 上的 overlay 目录 |
-| 夜间自动停止 | PVC 上的 `$D/bin/stop_after_save.sh`（台账 #12、#20） | 阶段 3–6 | 已在跨夜续训中验证过；以后改动时再迁移进仓库 |
+| 夜间自动停止 | PVC 上的 `$D/bin/stop_after_save.sh`（台账 #12、#20）；仓库里的 `train.stop_step`（`make_train_configs.py --stop_step`） | 阶段 3–6 | 脚本已在跨夜续训中验证过。`stop_step` 在训练代码内部停下并存盘，学习率调度不变，续训时如果已越过会报错；还没在 Pod 上实测，用法见 `02` 文档 4.4 节 |
 | 渲染探针与 OIDN 替换 | `embodiedx/taip/rt_probe.py`、`embodiedx/taip/oidn_swap.sh` | 阶段 0 | OIDN 替换待验收 |
 | 下载与校验 | `embodiedx/tools/hf_manifest.py`、`verify_downloads.py`、`extract_archives.py`、`mirror_fetch.sh`（训练 runbook 5.9） | 阶段 6 | hf-mirror 的 API 会卡住，按清单用 curl 直接下载；阶段六用到时再迁移 |
 | 数据转换链路 | `embodiedx/patches/robotwin-13c3c47-pi0-convert-deterministic.patch`，训练 runbook 5.3–5.5 | 阶段 6 | v2.1 → v3.0 必须转换 |

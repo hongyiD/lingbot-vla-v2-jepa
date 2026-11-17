@@ -46,6 +46,15 @@ def test_formal_arms(tmp_path):
 
     a0 = run(tmp_path, "formal", "--name", "train_c50_v1", *FORMAL)["train_c50_v1"]["train"]
     assert a0["align_params"]["action_cond"]["enabled"] is False and "seed" not in a0
+    assert "stop_step" not in a0
+
+
+def test_stop_step(tmp_path):
+    t = run(tmp_path, "formal", "--name", "seg", "--stop_step", "2147", *FORMAL)["seg"]["train"]
+    assert t["stop_step"] == 2147 and t["max_steps"] == 10735
+    for bad in ("0", "10735"):
+        with pytest.raises(SystemExit):
+            run(tmp_path, "formal", "--name", "seg", "--stop_step", bad, *FORMAL)
 
 
 def test_smoke_arm_suffixes_names_and_dirs(tmp_path):

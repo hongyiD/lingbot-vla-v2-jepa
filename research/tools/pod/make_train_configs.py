@@ -11,6 +11,8 @@ official file (global 1024 = micro 32 x 32 GPUs) fails as-is on 4 GPUs. Every co
   python make_train_configs.py smoke --arm B1               # the same smoke set with the arm applied, *_b1.yaml
   python make_train_configs.py formal --arm B1 --seed 43 --ac_weight 0.002 --micro_batch 64 --accum 1 \
       --max_steps 10735 --save_steps 2147                   # name defaults to jepa_B1_s43
+  python make_train_configs.py formal --arm B1 ... --max_steps 10735 --save_steps 2147 --stop_step 2147
+                                                            # first epoch only; resume later with a larger stop_step
 
 Arms: A0 is the official recipe. B0 and B1 add the action-conditioned head (align_params.action_cond), fed zero
 actions (B0) or the true action chunk (B1). --ac_context image_future reproduces the 2026-11-17 pilot, whose head
@@ -122,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--accum", type=int, default=None)
     ap.add_argument("--max_steps", type=int, default=None)
     ap.add_argument("--save_steps", type=int, default=None)
+    ap.add_argument("--stop_step", type=int, default=None,
+                    help="formal: stop and save at this step; the LR schedule still spans --max_steps")
     ap.add_argument("--no_check", action="store_true", help="do not require weights, list and norm stats to exist")
     args = ap.parse_args(argv)
 
@@ -149,8 +153,13 @@ def main(argv: list[str] | None = None) -> int:
         missing = [f"--{k}" for k in needed if getattr(args, k) is None]
         if missing:
             ap.error(f"formal needs {' '.join(missing)}")
+        extra = {"save_steps": args.save_steps}
+        if args.stop_step is not None:
+            if not 0 < args.stop_step < args.max_steps:
+                ap.error("--stop_step must be between 0 and --max_steps")
+            extra["stop_step"] = args.stop_step
         cfg = variant(base, args.gpus, args.micro_batch, args.accum, args.max_steps, args.work / "runs" / args.name,
-                      train={"save_steps": args.save_steps})
+                      train=extra)
         configs = {args.name: (args.gpus, cfg)}
     for _, cfg in configs.values():
         apply_arm(cfg, arm, args.ac_weight, args.ac_context)
@@ -173,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"context={ac.get('context', 'image_future')}"
                     if ac.get("enabled") else "")
         print(f"{path}: {gpus} GPU x mb {t['micro_batch_size']} x accum {t['gradient_accumulation_steps']} = "
-              f"global {t['global_batch_size']}, max_steps {t['max_steps']}, output_dir {t['output_dir']}{arm_note}")
+              f"global {t['global_batch_size']}, max_steps {t['max_steps']}"
+              f"{', stop_step ' + str(t['stop_step']) if t.get('stop_step') else ''}, output_dir {t['output_dir']}{arm_note}")
     return 0
 
 

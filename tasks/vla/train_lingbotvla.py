@@ -186,6 +186,11 @@ class MyTrainingArguments(TrainingArguments):
         default=100000,
         metadata={"help": "Training steps for stable training, after this step, the decayed_max_grad_norm will be applied."},
     )
+    stop_step: Optional[int] = field(
+        default=None,
+        metadata={"help": "Stop and save a checkpoint after this global step. Unlike max_steps it leaves the LR "
+                          "schedule, which still spans max_steps, unchanged."},
+    )
     resume_dataloader_state: bool = field(
         default=True,
         metadata={"help": "Whether to resume dataloader."},
@@ -328,6 +333,15 @@ class Arguments:
     data: "MyDataArguments" = field(default_factory=MyDataArguments)
     train: "MyTrainingArguments" = field(default_factory=MyTrainingArguments)
     eval: "EvalArguments" = field(default_factory=EvalArguments)
+
+
+def check_stop_step(stop_step: Optional[int], global_step: int) -> None:
+    """A stop_step already reached would train one more step and save another full checkpoint before stopping."""
+    if stop_step is not None and stop_step <= global_step:
+        raise ValueError(
+            f"train.stop_step={stop_step} is not past the resumed global_step={global_step}; "
+            "raise it for this segment or drop it."
+        )
 
 
 def main():
@@ -688,6 +702,7 @@ def main():
             logger.info_rank0("Starting training from scratch. No valid checkpoint could be loaded.")
     else:
         logger.info_rank0("Starting training from scratch.")
+    check_stop_step(args.train.stop_step, global_step)
 
     helper.empty_cache()
     model_fwd_context, model_bwd_context = build_activation_offloading_context(
@@ -1139,6 +1154,10 @@ def main():
 
             if args.train.max_steps is not None and global_step >= args.train.max_steps:
                 logger.info_rank0(f"Reached max_steps={args.train.max_steps}, stopping training.")
+                reached_max_steps = True
+                break
+            if args.train.stop_step is not None and global_step >= args.train.stop_step:
+                logger.info_rank0(f"Reached stop_step={args.train.stop_step}, stopping training.")
                 reached_max_steps = True
                 break
 

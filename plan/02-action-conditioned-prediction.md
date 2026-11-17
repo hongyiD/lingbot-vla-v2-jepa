@@ -111,11 +111,11 @@ B1 与 B0 只差"head 看不看得到动作"，其余完全一样（同样的参
 | `lingbotvla/models/vla/vision_models/align_heads/action_cond_head.py` | 新增 `ActionConditionedHead` 与 `teacher_delta_target` |
 | `lingbotvla/models/vla/lingbot_vla/modeling_lingbot_vla_v2.py` | `init_action_cond_head`、`action_cond_emb_forward`；`FlowMatchingV2.forward` 新增 `joint_mask`、`state_joint_mask`、`action_is_pad` 参数；`LingbotVlaV2Policy.post_training_new_modules` |
 | `lingbotvla/models/module_utils.py` | 后训练加载时，对模型声明的新子模块（整个都不在 checkpoint 里）调用它自己的 `reset_parameters()`，不再触发"缺参数"断言。只缺一部分时报错 |
-| `tasks/vla/train_lingbotvla.py` | 启用时在每步日志里加 `AC_Loss`（未加权）和 `AC_Shuffle_Gap`，跨卡平均 |
+| `tasks/vla/train_lingbotvla.py` | 启用时在每步日志里加 `AC_Loss`（未加权）和 `AC_Shuffle_Gap`，跨卡平均。另加 `train.stop_step`：到这一步就存完整 checkpoint 并停止，学习率调度仍按 `max_steps`；续训时如果 `stop_step` 不大于已到达的步数，直接报错 |
 | `configs/vla/robotwin/robotwin.yaml` | 新增 `train.align_params.action_cond`，默认 `enabled: false` |
-| `research/tools/pod/make_train_configs.py` | `--arm A0/B0/B1`、`--seed`、`--ac_weight`；formal 模式的默认名为 `jepa_<臂>_s<seed>`；smoke 模式带 `--arm` 时文件名和输出目录加 `_b0` / `_b1` 后缀 |
+| `research/tools/pod/make_train_configs.py` | `--arm A0/B0/B1`、`--seed`、`--ac_weight`、`--ac_context`、`--stop_step`；formal 模式的默认名为 `jepa_<臂>_s<seed>`；smoke 模式带 `--arm` 时文件名和输出目录加 `_b0` / `_b1` 后缀 |
 | `research/tools/pod/train_metrics.py` | 解析 `AC_Loss`、`AC_Shuffle_Gap`；`--ac_calibrate N` 给出 loss 权重建议 |
-| `research/model_tests/`、`research/tools/tests/test_pod_configs.py` | CPU 单元测试，共 18 个（见第 4 节） |
+| `research/model_tests/`、`research/tools/tests/test_pod_configs.py` | CPU 单元测试，共 21 个（见第 4 节） |
 
 **守住的约束（来自总计划 2 节的"已知的坑"）：**
 - 输出元组长度不变（仍是 11）。新 loss 通过一个私有键 `_action_cond_loss` 交给 `LingbotVlaV2Policy.forward`，在那里取出并加进总 loss。`FutureVideo_Loss` 的含义不变。
@@ -161,7 +161,8 @@ B1 与 B0 只差"head 看不看得到动作"，其余完全一样（同样的参
   - 元组长度不变，新 loss 被加进总 loss；
   - 加载器的初始化，只缺一部分参数时报错；
   - 官方 yaml 默认关闭。
-- `research/tools/tests/test_pod_configs.py`，4 个测试：配置生成与日志解析。
+- `research/model_tests/test_train_stop_step.py`，2 个测试：`stop_step` 默认关闭；续训时已经越过的 `stop_step` 会报错。需要在环境里装 `tensorboard` 和 `matplotlib` 才能导入训练脚本。
+- `research/tools/tests/test_pod_configs.py`，5 个测试：配置生成（含 `--ac_context`、`--stop_step`）与日志解析。
 
 Triton 和 grouped-GEMM 内核在 macOS 上导入不了，测试的 `conftest.py` 用替身模块绕过。这些测试不调用任何 GPU 内核。完整模型的前向和反向只能在 Pod 上验证（4.2）。
 
@@ -253,6 +254,17 @@ done
 ```bash
 python research/tools/pod/make_train_configs.py formal --arm B1 --seed 43 --ac_weight <校准值> \
     --micro_batch 64 --accum 1 --max_steps 10735 --save_steps 2147
+```
+
+**用 `stop_step` 分段跑：**
+- 训练可以停在任意一步，学习率曲线不变。生成配置时加 `--stop_step 2147`，训练跑完第一个 epoch 就存盘停下，学习率和完整跑 10735 步时的前 2147 步完全一致。
+- 续训时把 `stop_step` 调大（例如 `--train.stop_step 6441`），或者去掉它；`enable_resume` 会从最新的 checkpoint 接着跑。`stop_step` 不大于已到达的步数时会直接报错，不会多训一步、再存一个 74 GiB 的 checkpoint。
+- 用途一：以后的试点按 `--max_steps 10735 --stop_step 2147` 跑。VLA loss 能直接和 `train_c50_v1` 同步数比；选中的臂直接续训成主消融的 seed 42，每臂省约 2.4 小时。
+- 用途二：GPU 窗口不够一次跑完 11 小时时，按窗口长度分段，替代 PVC 上的 `stop_after_save.sh`。
+
+```bash
+lb_run 0,1,2,3 29620 $D/runs/jepa_B1_s42.log tasks/vla/train_lingbotvla.py $D/configs/jepa_B1_s42.yaml \
+    --train.stop_step 6441      # 第二段：从 2147 接着跑到 6441
 ```
 
 - 评测协议按总计划 3.4 节，只评最终 checkpoint。
