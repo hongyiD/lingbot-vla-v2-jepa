@@ -1,7 +1,7 @@
 # Experiment ledger
 
-- entries: 14, submissions: 0
-- rendered: 2026-11-20T15:28:35+08:00 (source of truth: ledger.jsonl)
+- entries: 15, submissions: 0
+- rendered: 2026-11-20T18:00:33+08:00 (source of truth: ledger.jsonl)
 
 | id | time | kind | title | fields | hashes |
 |---|---|---|---|---|---|
@@ -19,3 +19,4 @@
 | 12 | 2026-11-20T12:50:33+08:00 | note | B1 full run vs A0 train_c50_v1 (seed 42, same recipe): training-loss comparison | Depth_paired=ep5 +3.11%, FutD_paired=ep5 -0.45%, FutV_paired=ep5 -1.70%, StepTime_median=B1 3.557s vs A0 3.335s (+7%), VLA_ratio_of_means=ep1 +0.55% [+0.20,+0.84]; ep2 +0.16%; ep3 +0.11%; ep4 -0.05%; ep5 +0.04% [-0.72,+0.79], note=per-step mean of ratios (+1.0..+1.6%) is biased by independent flow-matching noise; use ratio of means, verdict=VLA unchanged (<=1.05x criterion met); success-rate eval pending |  |
 | 13 | 2026-11-20T13:19:37+08:00 | decision | Restart A2: V-JEPA 2 ViT-L on the 8-frame clip replaces DINO-Video (single-seed reference run after G1 fail) | clip=[t,t,t+8,t+16,t+24,t+33,t+41,t+49]; current=tubelet 0, future=last tubelet, commit=861382b, cpu_tests=84 passed (15 new), loss_weight=calibrate video.mse_loss_weight = S_dino/S_jepa on the Pod (check_pipeline video --variant V2), next=Pod self-check, smoke, pilot --stop_step 2147, plan=plan/03-jepa-teacher-a2.md, reason=Stage 1 V2: P1s -9.6% [-18.0,+0.8] vs DINO, gripper events 0.0072 vs 0.0107 | 03-jepa-teacher-a2.md:371b1c26ea |
 | 14 | 2026-11-20T15:28:35+08:00 | note | A2 Pod self-check (check_pipeline data/video --variant V2) and MSE weight calibration | commit=fa8730e, data=5/5 PASS: labels, rows, pixels incl. mid frames [8,16,24,33,41] bit-equal, fps, config teacher_mismatch={}, mse_loss_weight=0.0026, next=smoke: A0 regression + A2 s3b 30 steps, samples=64, scale=S_dino cur/fut=0.01250/0.01592, S_jepa cur/fut=5.529/5.278, ratio cur/fut=0.00226/0.00302, v2_target=PASS cosine_mean=0.999999 min=0.999997 rel_l2=0.00166 (bf16 rounding of training targets), pixels_equal |  |
+| 15 | 2026-11-20T18:00:33+08:00 | run | A2 smoke (s3b: 4 GPU x mb64, 30 steps) and A0 regression with code fa8730e | A0_regression=step1 Depth/FutD/FutV/VLA identical to old S3b (3.4065/3.3073/0.7448/0.3584), A2_FutV_per10=0.4353, 0.4156, 0.4023, A2_VLA_per10=0.2882, 0.2092, 0.1744, A2_step1=Depth/FutD identical to A0; FutV 0.4468 vs A0 0.7448; VLA 0.3608 vs 0.3584 (RNG: no DINO teacher built), StepTime_median=A2 3.30s vs A0 3.40s, commit=fa8730e, mse_loss_weight=0.0026, nonfinite=0, outside_StepTime=A2 +0.03s vs A0 +0.02s per step, verdict=pass; next pilot --stop_step 2147 |  |
