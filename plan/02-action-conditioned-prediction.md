@@ -285,6 +285,13 @@ lb_run 0,1,2,3 29620 $D/runs/jepa_B1_s42.log tasks/vla/train_lingbotvla.py $D/co
 
 - 评测协议按总计划 3.4 节，只评最终 checkpoint。
 
+**B1 完整训练（2026-11-19，台账 #11）：** 收尾以后，作为动作预测头这条路的代表方案单独补跑了一次。
+- 配置：`jepa_B1_s42`，`context: image`，权重 0.004，seed 42，10735 步，代码 `26a3978`。
+- 训练：11.5 小时，StepTime 中位数 3.56 秒，没有非有限值，5 个 checkpoint 都存完了。
+- 第 5 个 epoch 的均值：VLA 0.0141，Depth 0.251，Future_Depth 0.338，FutureVideo 0.026，AC 0.310，`gap` 0.056。
+- 参照：总计划里记的 `train_c50_v1` 末期值是 VLA 0.0132、Depth 0.24、Future_Depth 0.34、FutureVideo 0.026。这几个数的统计窗口没有写明，要找到它的日志，按同样的窗口再比一次。
+- 没有 B0 作对照，所以这个跑次只能回答"加这个辅助目标相对 A0 有没有用"，回答不了"动作有没有用"。结论要等成功率评测。
+
 ---
 
 ## 5. 还没做的事
