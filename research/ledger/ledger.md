@@ -1,7 +1,7 @@
 # Experiment ledger
 
-- entries: 12, submissions: 0
-- rendered: 2026-11-20T12:50:33+08:00 (source of truth: ledger.jsonl)
+- entries: 13, submissions: 0
+- rendered: 2026-11-20T13:19:37+08:00 (source of truth: ledger.jsonl)
 
 | id | time | kind | title | fields | hashes |
 |---|---|---|---|---|---|
@@ -17,3 +17,4 @@
 | 10 | 2026-11-17T15:26:57+08:00 | decision | Close the action-conditioned head line (B0/B1) before the main ablation | next=re-prioritise the overall plan, plan=plan/02-action-conditioned-prediction.md, reason=B1 = B0 in AC loss and VLA loss in both pilots; likely the VLA image tokens already encode the expert action (deterministic demos), so the action input is redundant | 02-action-conditioned-prediction.md:74774b779a |
 | 11 | 2026-11-20T12:43:14+08:00 | run | B1 full run jepa_B1_s42 (image context, weight 0.004), 4 GPU x mb64, 10735 steps | StepTime_median=3.557s, checkpoints=global_step_2147..10735 every 2147, hf_ckpt all finished, commit=26a3978, ep5_AC=0.3099, ep5_ACgap=0.0555, ep5_Depth=0.2513, ep5_FutD=0.3376, ep5_FutV=0.0261, ep5_VLA=0.0141, nonfinite=0, note=baseline train_c50_v1 log not yet located for same-step comparison, wall=11.49h |  |
 | 12 | 2026-11-20T12:50:33+08:00 | note | B1 full run vs A0 train_c50_v1 (seed 42, same recipe): training-loss comparison | Depth_paired=ep5 +3.11%, FutD_paired=ep5 -0.45%, FutV_paired=ep5 -1.70%, StepTime_median=B1 3.557s vs A0 3.335s (+7%), VLA_ratio_of_means=ep1 +0.55% [+0.20,+0.84]; ep2 +0.16%; ep3 +0.11%; ep4 -0.05%; ep5 +0.04% [-0.72,+0.79], note=per-step mean of ratios (+1.0..+1.6%) is biased by independent flow-matching noise; use ratio of means, verdict=VLA unchanged (<=1.05x criterion met); success-rate eval pending |  |
+| 13 | 2026-11-20T13:19:37+08:00 | decision | Restart A2: V-JEPA 2 ViT-L on the 8-frame clip replaces DINO-Video (single-seed reference run after G1 fail) | clip=[t,t,t+8,t+16,t+24,t+33,t+41,t+49]; current=tubelet 0, future=last tubelet, commit=861382b, cpu_tests=84 passed (15 new), loss_weight=calibrate video.mse_loss_weight = S_dino/S_jepa on the Pod (check_pipeline video --variant V2), next=Pod self-check, smoke, pilot --stop_step 2147, plan=plan/03-jepa-teacher-a2.md, reason=Stage 1 V2: P1s -9.6% [-18.0,+0.8] vs DINO, gripper events 0.0072 vs 0.0107 | 03-jepa-teacher-a2.md:371b1c26ea |
