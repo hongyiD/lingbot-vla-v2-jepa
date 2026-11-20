@@ -5,6 +5,7 @@
 - 参考资料：`embodiedx/`，即此前在 TAIP B300 上的训练、数据转换和评测环境记录。只读引用，`embodiedx/refs/` 下的代码不改
 - 阶段一的详细执行计划：[`01-stage1-offline-probe.md`](01-stage1-offline-probe.md)
 - 阶段二（改道后）的详细计划：[`02-action-conditioned-prediction.md`](02-action-conditioned-prediction.md)
+- A2（V-JEPA 2 的 8 帧教师替换 DINO-Video）：[`03-jepa-teacher-a2.md`](03-jepa-teacher-a2.md)
 
 > **v0.2 改道说明（2026-11-16）。**
 > - 阶段一按预注册标准没有通过 G1：JEPA 特征没有在逆动力学探针上显著优于 DINO-Video。报告见 `research/jepa_probe/reports/stage1_report.md`。
@@ -17,6 +18,11 @@
 > - 两轮 1 个 epoch 试点里，B1 对 B0 的预测误差和 VLA loss 都没有差别。按阶段三的判定，不进主消融（台账 #7–#10）。
 > - B 臂的代码保留在仓库里，默认关闭，不影响 A0。
 > - 下一步在剩下的分支里重新排优先级：A1 开关、评测链路，以及是否重启 A2/A3。
+>
+> **2026-11-20：两条路各做一个完整训练。**
+> - 动作预测头这条：B1（`context: image`，权重 0.004）的完整训练已跑完，VLA loss 与 A0 无差别，成功率待评测（台账 #11、#12）。
+> - JEPA 这条：重启 A2，用阶段一的 V2（V-JEPA 2 ViT-L，8 帧 clip）替换 DINO-Video。这是 G1 未通过之后的单 seed 参考 run，不是主消融。设计、代码和进度见 `03` 文档；代码和本地测试已完成，待 Pod 自检。
+> - 教师抽象按 `03` 文档实现：配置项是 `video.teacher_type`（`dino_video` / `vjepa2`）、`video.jepa_model_path` 和 `data.future_video_mid_frames`，取代下文阶段二第 2 条里 v0.1 设想的那组 `jepa_*` 配置项。
 
 ---
 
@@ -380,7 +386,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 |---|---|---|---|
 | Pod 环境与启动函数 | `research/tools/pod/pod.env`：`lb_run`、`smoke_stats`、`step_wall` | 阶段 1–6 | 由 `taip.env` 改来：`LB` 默认取 pod.env 所在的仓库目录（即同步到 PVC 的本仓库，`$D/code/lingbot-vla-v2-jepa`），并放在 `PYTHONPATH` 最前面，覆盖镜像里的旧代码；各变量都可以先 export 覆盖 |
 | 数据读取补丁 | `research/tools/pod/agx_run.py` | 阶段 1–6 | 训练必须带上（`lb_run` 已经内置）；阶段一读标签也照它的做法，不解码图像列 |
-| 配置生成 | `research/tools/pod/make_train_configs.py` | 阶段 2–4 | 已有 `--arm A0/B0/B1`、`--seed`、`--ac_weight`；A1 做好后再加；`--teacher_type` 随 A2/A3 暂缓 |
+| 配置生成 | `research/tools/pod/make_train_configs.py` | 阶段 2–4 | 已有 `--arm A0/A2/B0/B1`、`--seed`、`--ac_weight`、`--ac_context`、`--video_mse_weight`（A2，见 `03` 文档第 3 节）；A1 做好后再加 |
 | 训练指标解析 | `research/tools/pod/train_metrics.py` | 阶段 3–4 | 已解析 `AC_Loss`、`AC_Shuffle_Gap`，`--ac_calibrate` 给出权重建议；`FutureJepa_Loss` 列随 A3 暂缓 |
 | 评测解析与 A/B 判定 | `research/tools/parse_eval_run.py`、`research/tools/ab_test.py` | 阶段 0、3–6 | 新增 `--instruction_types`（默认 `clean=seen,randomized=unseen`），阶段零冻结协议时按协议设置 |
 | 台账 | `research/tools/ledger.py` | 全部阶段 | 默认写到 `research/ledger/` |

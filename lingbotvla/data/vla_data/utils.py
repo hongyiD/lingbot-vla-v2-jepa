@@ -11,7 +11,7 @@ import ast
 import torch.nn.functional as F
 
 from ...utils import logging as logging_utils
-from .transform import Normalizer, prepare_images, prepare_state, prepare_language, prepare_action, expert_visual_transform
+from .transform import Normalizer, prepare_images, prepare_state, prepare_language, prepare_action, expert_visual_transform, apply_visual_augmentation
 from .ee_pose_transform import *
 from typing import Dict, List, Optional
 import ast
@@ -129,8 +129,40 @@ class FeatureTransform:
         self.images = target_features['images']
 
         self.org_features = org_features
+        self.future_video_mid_frames = self.get_future_video_mid_frames(data_config) if use_future_image else []
 
         self.normalizer = self.get_normalizer(norm_stats_path, do_nomalize, data_config)
+
+    def get_future_video_mid_frames(self, data_config):
+        """Chunk offsets of the extra frames the video teacher reads between t and t + chunk_size - 1."""
+        offsets = [int(o) for o in (getattr(data_config, 'future_video_mid_frames', None) or [])]
+        if not offsets:
+            return []
+        if any(not 0 < o < self.chunk_size - 1 for o in offsets) or offsets != sorted(set(offsets)):
+            raise ValueError(f"data.future_video_mid_frames must increase strictly inside (0, {self.chunk_size - 1}), got {offsets}.")
+        if not self.feature_config.images:
+            raise ValueError("data.future_video_mid_frames needs data.cameras; the first camera feeds the video teacher.")
+        return offsets
+
+    @property
+    def video_image_key(self):
+        """The camera the video teacher reads: pil_images[:, 0], the first of data.cameras."""
+        return self.feature_config.images[0]
+
+    @property
+    def video_image_org_key(self):
+        target = self.video_image_key
+        origin = self.key_mapping.get(target, {}).get('origin_keys', target)
+        if not isinstance(origin, str):
+            raise ValueError(f"{target} must map to a single dataset column, got {origin}.")
+        return origin
+
+    @staticmethod
+    def augment_future_video_mid_images(frames, augment_params):
+        """[M, C, H, W] uint8 with the sample's colour augmentation, frame by frame as prepare_images does."""
+        if augment_params is None:
+            return frames
+        return torch.stack([apply_visual_augmentation(frame, augment_params) for frame in frames])
 
     def get_normalizer(self, norm_stats_path, do_nomalize, data_config):
 
@@ -436,9 +468,14 @@ class FeatureTransform:
                 )
             else:
                 future_images, future_pil_images = None, None
+            future_video_mid_pil_images = None
+            if "future_video_mid_image" in batch_dict:
+                future_video_mid_pil_images = self.augment_future_video_mid_images(
+                    batch_dict["future_video_mid_image"], image_augment_params)
         else:
             images, img_masks, pil_images, image_grid_thw = [], [], [], None
             future_images, future_pil_images = None, None
+            future_video_mid_pil_images = None
 
         merge_size = getattr(self.processor.image_processor, "merge_size", 2)
         image_token_count = compute_image_token_count(
@@ -485,6 +522,8 @@ class FeatureTransform:
             if self.use_future_image:
                 #assert future_pil_images is not None and future_pil_images is not []:
                 batch_dict['future_pil_images'] = future_pil_images
+                if future_video_mid_pil_images is not None:
+                    batch_dict['future_video_mid_pil_images'] = future_video_mid_pil_images
         return batch_dict
 
     def unapply(self, item):
@@ -570,6 +609,12 @@ class FeatureTransform:
                 else:
                     images[image_key] = _to_uint8(item[image_key][0])
                     future_images[image_key] = _to_uint8(item[image_key][-1])
+                    if self.future_video_mid_frames and image_key == self.video_image_key:
+                        frames = item[image_key]
+                        if frames.shape[0] != len(self.future_video_mid_frames) + 2:
+                            raise ValueError(f"{image_key}: expected {len(self.future_video_mid_frames) + 2} frames "
+                                             f"(t, mid frames, future), got {tuple(frames.shape)}")
+                        future_video_mid_images = torch.stack([_to_uint8(frame) for frame in frames[1:-1]])
 
         actions, action_joints_pad = [], []
         states, state_joints_pad = [], []
@@ -623,5 +668,7 @@ class FeatureTransform:
         }
         if "future_video_effective_fps" in item:
             batch_dict["future_video_effective_fps"] = item["future_video_effective_fps"]
+        if self.future_video_mid_frames and self.video_image_key in images:
+            batch_dict["future_video_mid_image"] = future_video_mid_images
 
         return batch_dict

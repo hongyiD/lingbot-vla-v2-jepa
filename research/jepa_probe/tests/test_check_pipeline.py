@@ -110,3 +110,102 @@ def test_video_check_passes_with_identical_targets(workspace, monkeypatch):
     assert check_pipeline.main(args) == 0
     result = __import__("json").loads(out.read_text())["checks"]["v0_target"]
     assert result["identical"] and result["pixels_equal"]
+
+
+# Arm A2 (plan/03): V-JEPA 2 on [t, t, t+8, ..., t+41, t+49], against the Stage 1 V2 variant.
+
+def _a2_config(root: Path, weights: Path) -> Path:
+    import yaml
+
+    from research.tools.pod.make_train_configs import apply_arm
+
+    cfg = yaml.safe_load((LB / "configs/vla/robotwin/robotwin.yaml").read_text(encoding="utf-8"))
+    apply_arm(cfg, "A2", weights=weights)
+    path = root / "train_a2.yaml"
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _a2_args(root: Path, mode: str, *extra: str) -> list[str]:
+    args = _args(root, mode, "--variant", "V2", *extra)
+    args[args.index("--train_config") + 1] = str(_a2_config(root, root / "weights"))
+    return args
+
+
+def _a2_data_args(root: Path):
+    data_args, video_cfg, chunk = check_pipeline.load_train_config(_a2_config(root, root / "weights"))
+    return data_args, chunk
+
+
+def test_a2_reads_mid_frames_for_the_top_camera_only(workspace):
+    data_args, chunk = _a2_data_args(workspace)
+    items = check_pipeline.TrainingItems(data_args, workspace / "robot_configs", "robotwin_c50", chunk)
+    vla = items.dataset(str(workspace / "data" / "click_bell-aloha-agilex_clean_50-50"))
+    delta = vla.get_video_delta_timestamps()
+    assert [round(t * 50) for t in delta["observation.images.cam_high"]] == [0, 8, 16, 24, 33, 41, 49]
+    assert all([round(t * 50) for t in delta[f"observation.images.{c}"]] == [0, 49] for c in CAMERAS[1:])
+    built = items.build(str(workspace / "data" / "click_bell-aloha-agilex_clean_50-50"), 3)
+    assert built["future_video_mid_pil_images"].shape == (5, 3, 256, 256)
+    assert built["future_video_mid_pil_images"].dtype == torch.uint8
+    assert built["future_pil_images"].shape == (3, 3, 256, 256)  # future depth still reads t+49 of every camera
+
+
+def test_a2_data_check_passes(workspace, monkeypatch):
+    monkeypatch.setenv("D", str(workspace))
+    monkeypatch.setenv("W", str(workspace / "weights"))
+    out = workspace / "data_a2.json"
+    assert check_pipeline.main(_a2_args(workspace, "data", "--samples", "8", "--out", str(out))) == 0
+    report = __import__("json").loads(out.read_text())
+    assert report["checks"]["pixels"]["mid_frames"] == [8, 16, 24, 33, 41]
+    assert report["checks"]["config"]["teacher_mismatch"] == {}
+
+
+def test_a2_data_check_catches_wrong_mid_frames(workspace, monkeypatch):
+    import yaml
+
+    monkeypatch.setenv("D", str(workspace))
+    args = _a2_args(workspace, "data", "--samples", "2")
+    path = Path(args[args.index("--train_config") + 1])
+    cfg = yaml.safe_load(path.read_text())
+    cfg["data"]["future_video_mid_frames"] = [10, 20, 30, 40, 45]
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    assert check_pipeline.main(args) == 1
+
+
+def test_mid_frames_are_off_without_future_images(workspace):
+    data_args, chunk = _a2_data_args(workspace)
+    robot = str(workspace / "robot_configs" / "robotwin_c50.yaml")
+    from lingbotvla.data.vla_data.utils import FeatureTransform
+
+    deploy = FeatureTransform(robot, data_args, None, None, do_nomalize=False, chunk_size=chunk)
+    assert deploy.future_video_mid_frames == []
+    data_args.future_video_mid_frames = [8, 49]
+    with pytest.raises(ValueError, match="future_video_mid_frames"):
+        FeatureTransform(robot, data_args, None, None, do_nomalize=False, chunk_size=chunk, use_future_image=True)
+
+
+def test_a2_video_check_matches_the_v2_runner_and_reports_scale(workspace, monkeypatch):
+    from lingbotvla.models.vla.vision_models.jepa.teacher import ToyEncoder, VJepaTeacher
+
+    def toy_from_hf(path, dtype=torch.bfloat16):
+        assert Path(path).name == "vjepa2-vitl-fpc64-256"
+        torch.manual_seed(0)
+        return VJepaTeacher(ToyEncoder(), backend="hf_vjepa2")
+
+    original = module_utils.build_video_model
+    monkeypatch.setattr(VJepaTeacher, "_tokens", lambda self, video, hidden_layer: self.encoder(video))
+    monkeypatch.setattr(VJepaTeacher, "from_hf", staticmethod(toy_from_hf))
+    monkeypatch.setattr(module_utils, "build_video_model",
+                        lambda cfg: original(cfg) if cfg.get("teacher_type") == "vjepa2" else _FakeVideoTeacher())
+    monkeypatch.setenv("D", str(workspace))
+    out = workspace / "video_a2.json"
+    args = _a2_args(workspace, "video", "--batches", "2", "--batch", "3", "--device", "cpu", "--out", str(out))
+    assert check_pipeline.main(args) == 0
+    checks = __import__("json").loads(out.read_text())["checks"]
+    # Same teacher on the same pixels; the gap is the training path's bf16 rounding of its targets.
+    target = checks["v2_target"]
+    assert target["pass"] and target["pixels_equal"] and target["rel_l2"] < 4e-3
+    scale = checks["scale"]
+    assert scale["S_jepa_future"] > 0 and scale["S_dino_future"] > 0
+    ratio = (scale["ratio_current"] + scale["ratio_future"]) / 2
+    assert scale["suggested_mse_loss_weight"] == pytest.approx(ratio, rel=0.05)

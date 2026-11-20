@@ -13,10 +13,14 @@ official file (global 1024 = micro 32 x 32 GPUs) fails as-is on 4 GPUs. Every co
       --max_steps 10735 --save_steps 2147                   # name defaults to jepa_B1_s43
   python make_train_configs.py formal --arm B1 ... --max_steps 10735 --save_steps 2147 --stop_step 2147
                                                             # first epoch only; resume later with a larger stop_step
+  python make_train_configs.py formal --arm A2 --video_mse_weight 1.0 --micro_batch 64 --accum 1 \
+      --max_steps 10735 --save_steps 2147 --stop_step 2147  # name defaults to jepa_A2_s42
 
-Arms: A0 is the official recipe. B0 and B1 add the action-conditioned head (align_params.action_cond), fed zero
-actions (B0) or the true action chunk (B1). --ac_context image_future reproduces the 2026-11-17 pilot, whose head
-also read the future task tokens.
+Arms: A0 is the official recipe. A2 replaces the DINO-Video teacher with V-JEPA 2 ViT-L on the 8-frame clip
+[t, t, t+8, t+16, t+24, t+33, t+41, t+49] (plan/03); --video_mse_weight sets video.mse_loss_weight, the
+scale calibration of plan/03 section 3. B0 and B1 add
+the action-conditioned head (align_params.action_cond), fed zero actions (B0) or the true action chunk (B1).
+--ac_context image_future reproduces the 2026-11-17 pilot, whose head also read the future task tokens.
 
 Paths default to the pod.env variables D, W, CFG, LB; --no_check skips the existence checks.
 """
@@ -31,7 +35,9 @@ from pathlib import Path
 import yaml
 
 ROBOT = "robotwin_c50"
-ARMS = ("A0", "B0", "B1")
+ARMS = ("A0", "A2", "B0", "B1")
+JEPA_WEIGHTS = "vjepa/vjepa2-vitl-fpc64-256"  # under W; the Stage 1 V2 teacher
+JEPA_MID_FRAMES = [8, 16, 24, 33, 41]  # round(49 * k / 6), k = 1..5
 
 
 def _env_path(name: str) -> Path | None:
@@ -60,6 +66,8 @@ def missing_inputs(cfg: dict) -> list[str]:
     paths = [model["model_path"], model["tokenizer_path"], depth["moge_path"], depth["morgbd_path"],
              video["ckpt_path"], video["config_path"], data["train_path"], data["norm_stats_file"],
              str(Path(data["robot_config_root"]) / f"{ROBOT}.yaml")]
+    if video.get("teacher_type") == "vjepa2":
+        paths.append(video["jepa_model_path"])
     return [p for p in paths if not Path(p).exists()]
 
 
@@ -74,14 +82,26 @@ def variant(base: dict, gpus: int, micro: int, accum: int, max_steps: int, outpu
     return cfg
 
 
-def apply_arm(cfg: dict, arm: str, ac_weight: float | None = None, ac_context: str | None = None) -> dict:
+def apply_arm(cfg: dict, arm: str, ac_weight: float | None = None, ac_context: str | None = None,
+              weights: Path | None = None, video_mse_weight: float | None = None) -> dict:
     if arm not in ARMS:
         raise ValueError(f"unknown arm {arm!r}, expected one of {ARMS}")
-    if arm == "A0" and (ac_weight is not None or ac_context is not None):
+    b_arm = arm.startswith("B")
+    if not b_arm and (ac_weight is not None or ac_context is not None):
         raise ValueError("--ac_weight and --ac_context only apply to the B arms")
+    if arm != "A2" and video_mse_weight is not None:
+        raise ValueError("--video_mse_weight only applies to the A2 arm")
+    if arm == "A2":
+        if weights is None:
+            raise ValueError("the A2 arm needs the weights dir for the V-JEPA 2 model")
+        video = cfg["train"]["align_params"]["video"]
+        video.update(teacher_type="vjepa2", jepa_model_path=str(Path(weights) / JEPA_WEIGHTS), use_warmup_frame=False)
+        if video_mse_weight is not None:
+            video["mse_loss_weight"] = video_mse_weight
+        cfg["data"]["future_video_mid_frames"] = list(JEPA_MID_FRAMES)
     ac = cfg["train"]["align_params"].setdefault("action_cond", {})
-    ac["enabled"] = arm != "A0"
-    if arm != "A0":
+    ac["enabled"] = b_arm
+    if b_arm:
         ac["use_actions"] = arm == "B1"
         if ac_weight is not None:
             ac["loss_weight"] = ac_weight
@@ -119,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ac_weight", type=float, default=None, help="B arms: align_params.action_cond.loss_weight")
     ap.add_argument("--ac_context", choices=("image", "image_future"), default=None,
                     help="B arms: align_params.action_cond.context (default: the official yaml's, image)")
+    ap.add_argument("--video_mse_weight", type=float, default=None,
+                    help="A2: video.mse_loss_weight (default: the official yaml's, 1.0)")
     ap.add_argument("--gpus", type=int, default=4, help="formal: GPUs the run will use")
     ap.add_argument("--micro_batch", type=int, default=None)
     ap.add_argument("--accum", type=int, default=None)
@@ -137,8 +159,10 @@ def main(argv: list[str] | None = None) -> int:
     base = base_config(args.lingbot_root, args.weights, args.cfg, train_list)
 
     arm = args.arm or "A0"
-    if (args.ac_weight is not None or args.ac_context is not None) and arm == "A0":
+    if (args.ac_weight is not None or args.ac_context is not None) and not arm.startswith("B"):
         ap.error("--ac_weight and --ac_context only apply to --arm B0/B1")
+    if args.video_mse_weight is not None and arm != "A2":
+        ap.error("--video_mse_weight only applies to --arm A2")
     if args.mode == "smoke":
         configs = smoke_configs(base, args.work / "smoke")
         if arm != "A0":
@@ -162,12 +186,12 @@ def main(argv: list[str] | None = None) -> int:
                       train=extra)
         configs = {args.name: (args.gpus, cfg)}
     for _, cfg in configs.values():
-        apply_arm(cfg, arm, args.ac_weight, args.ac_context)
+        apply_arm(cfg, arm, args.ac_weight, args.ac_context, weights=args.weights, video_mse_weight=args.video_mse_weight)
         if args.seed is not None:
             cfg["train"]["seed"] = args.seed
 
     if not args.no_check:
-        absent = missing_inputs(base)
+        absent = sorted({p for _, cfg in configs.values() for p in missing_inputs(cfg)})
         if absent:
             print("missing inputs:\n  " + "\n  ".join(absent), file=sys.stderr)
             return 1
@@ -181,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         arm_note = (f", action_cond use_actions={ac['use_actions']} weight={ac.get('loss_weight')} "
                     f"context={ac.get('context', 'image_future')}"
                     if ac.get("enabled") else "")
+        video = t["align_params"]["video"]
+        if video.get("teacher_type") == "vjepa2":
+            arm_note += (f", teacher vjepa2 mid_frames={cfg['data']['future_video_mid_frames']} "
+                         f"mse_weight={video.get('mse_loss_weight')}")
         print(f"{path}: {gpus} GPU x mb {t['micro_batch_size']} x accum {t['gradient_accumulation_steps']} = "
               f"global {t['global_batch_size']}, max_steps {t['max_steps']}"
               f"{', stop_step ' + str(t['stop_step']) if t.get('stop_step') else ''}, output_dir {t['output_dir']}{arm_note}")

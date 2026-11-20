@@ -71,8 +71,42 @@ def test_ac_weight_needs_a_b_arm(tmp_path):
         run(tmp_path, "formal", "--name", "x", "--ac_weight", "0.01", *FORMAL)
     with pytest.raises(SystemExit):
         run(tmp_path, "formal", "--name", "x", "--ac_context", "image", *FORMAL)
+    with pytest.raises(SystemExit):
+        run(tmp_path, "formal", "--arm", "A2", "--ac_weight", "0.01", *FORMAL)
     with pytest.raises(ValueError):
-        mtc.apply_arm({"train": {"align_params": {}}}, "A2")
+        mtc.apply_arm({"train": {"align_params": {}}}, "A3")
+
+
+def test_a2_arm(tmp_path):
+    cfgs = run(tmp_path, "formal", "--arm", "A2", "--video_mse_weight", "0.37", "--stop_step", "2147", *FORMAL)
+    cfg = cfgs["jepa_A2_s42"]
+    video = cfg["train"]["align_params"]["video"]
+    assert video["teacher_type"] == "vjepa2" and video["use_warmup_frame"] is False
+    assert video["jepa_model_path"] == str(tmp_path / "w" / "vjepa" / "vjepa2-vitl-fpc64-256")
+    assert video["mse_loss_weight"] == 0.37 and video["future_video_loss_weight"] == 0.004
+    assert cfg["data"]["future_video_mid_frames"] == [8, 16, 24, 33, 41]
+    assert cfg["train"]["align_params"]["action_cond"]["enabled"] is False
+    assert cfg["train"]["stop_step"] == 2147
+
+    (tmp_path / "smoke").mkdir()
+    smoke = run(tmp_path / "smoke", "smoke", "--arm", "A2")
+    assert set(smoke) >= {"smoke_s1_a2", "smoke_s3b_a2"}
+    assert all(c["train"]["align_params"]["video"]["teacher_type"] == "vjepa2" for c in smoke.values())
+    assert all(c["train"]["align_params"]["video"]["mse_loss_weight"] == 1.0 for c in smoke.values())
+
+    a0 = run(tmp_path, "formal", "--name", "a0", *FORMAL)["a0"]
+    assert a0["train"]["align_params"]["video"]["teacher_type"] == "dino_video"
+    assert "future_video_mid_frames" not in a0["data"]
+    for arm in ("A0", "B1"):
+        with pytest.raises(SystemExit):
+            run(tmp_path, "formal", "--arm", arm, "--video_mse_weight", "0.5", *FORMAL)
+
+
+def test_a2_needs_the_jepa_weights(tmp_path, capsys):
+    argv = ["formal", "--arm", "A2", *FORMAL, "--lingbot_root", str(LB), "--weights", str(tmp_path / "w"),
+            "--cfg", str(tmp_path / "cfg"), "--work", str(tmp_path), "--out_dir", str(tmp_path / "configs")]
+    assert mtc.main(argv) == 1
+    assert "vjepa/vjepa2-vitl-fpc64-256" in capsys.readouterr().err
 
 
 LINE = ("11/16/2026 01:00:{s:02d} - INFO - __main__ - Step {step}/100, Epoch 1, Loss 0.5000, VLA_Loss 0.0500, "

@@ -41,6 +41,7 @@ from lingbotvla.models.config_registry import get_config_registry
 from lingbotvla.models.vla.vision_models.module_utils import (
     build_depth_model,
     build_video_model,
+    check_video_teacher_config,
     get_depth_target,
     get_video_target,
     log_video,
@@ -324,6 +325,10 @@ class MyDataArguments(DataArguments):
         default=False,
         metadata={"help": "Whether to use future image."},
     )
+    future_video_mid_frames: Optional[List[int]] = field(
+        default=None,
+        metadata={"help": "Chunk offsets of extra first-camera frames for a multi-frame video teacher (vjepa2)."},
+    )
 
 
 @dataclass
@@ -397,6 +402,8 @@ def main():
     use_future_depth = args.train.align_params.get('depth', {}).get('use_future_depth', False)
     use_future_video = use_depth_align and args.train.align_params.get('use_future_video', False)
     use_action_cond = use_future_video and bool((args.train.align_params.get('action_cond') or {}).get('enabled', False))
+    if args.data.future_video_mid_frames and not use_future_video:
+        raise ValueError("data.future_video_mid_frames needs align_params.use_future_video with video.teacher_type: vjepa2.")
     depth_model_type = None
     video_teacher = None
     future_video_loss_weight = 1.0
@@ -406,6 +413,7 @@ def main():
         if not args.data.use_future_image:
             raise ValueError("align_params.use_future_video=True requires data.use_future_image=True.")
         video_cfg = args.train.align_params.get("video", {})
+        check_video_teacher_config(video_cfg, args.data.future_video_mid_frames)
         future_video_loss_weight = video_cfg.get(
             "future_video_loss_weight",
             args.train.align_params.get(
@@ -782,6 +790,9 @@ def main():
                         depth_start_time = time.time()
                         pil_images = micro_batch.pop('pil_images', None)
                         future_pil_images = micro_batch.pop('future_pil_images', None) if (use_future_depth or use_future_video) else None
+                        future_video_mid_pil_images = micro_batch.pop('future_video_mid_pil_images', None)
+                        if args.data.future_video_mid_frames and future_video_mid_pil_images is None:
+                            raise ValueError("data.future_video_mid_frames is set but the batch has no future_video_mid_pil_images.")
                         with torch.autocast("cuda", dtype=torch.bfloat16):
                             depth_targets, cls_token = get_depth_target(depth_model_type, (moge_model, morgbd_model), pil_images)
                             if use_future_depth:
@@ -794,6 +805,7 @@ def main():
                                     future_pil_images,
                                     args.train.align_params['video'],
                                     effective_fps=future_video_effective_fps,
+                                    mid_pil_images=future_video_mid_pil_images,
                                 )
                                 if isinstance(future_video_target_bundle, dict):
                                     future_video_targets = future_video_target_bundle["patch"]

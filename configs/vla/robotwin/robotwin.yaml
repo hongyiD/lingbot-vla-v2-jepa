@@ -101,6 +101,9 @@ train:
       block_future_depth_to_action: false
       detach_future_image_feats: true
     video:
+      # dino_video, or vjepa2: V-JEPA 2 from jepa_model_path (HF format) on [t, t, *data.future_video_mid_frames, future],
+      # which needs use_warmup_frame: false.
+      teacher_type: dino_video
       ckpt_path: /path/to/dino_video/teacher_step_10000.pth
       config_path: /path/to/dino_video/config.yaml
       attention_mode: flex_block_causal

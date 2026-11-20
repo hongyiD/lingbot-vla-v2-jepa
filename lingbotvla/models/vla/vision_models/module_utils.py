@@ -331,8 +331,41 @@ def _make_video_feature_grid_panel(
             draw.text((x_offset + 6, y_offset + height + 3), caption, fill="red")
     return panel
 
+VIDEO_TEACHER_TYPES = ("dino_video", "vjepa2")
+
+
+def video_teacher_type(config):
+    teacher_type = str(_cfg_get(_video_config(config), "teacher_type", "dino_video"))
+    if teacher_type not in VIDEO_TEACHER_TYPES:
+        raise ValueError(f"video.teacher_type must be one of {VIDEO_TEACHER_TYPES}, got {teacher_type!r}.")
+    return teacher_type
+
+
+def check_video_teacher_config(config, mid_frames=None):
+    """Raise when the video section and the data's extra teacher frames do not fit together."""
+    video_cfg = _video_config(config)
+    mid_frames = list(mid_frames or [])
+    if video_teacher_type(video_cfg) == "dino_video":
+        if mid_frames:
+            raise ValueError("data.future_video_mid_frames only applies to video.teacher_type: vjepa2.")
+        return
+    if not _cfg_get(video_cfg, "jepa_model_path"):
+        raise ValueError("video.teacher_type: vjepa2 needs video.jepa_model_path.")
+    for key in ("use_warmup_frame", "use_cls_loss"):
+        if _cfg_get(video_cfg, key, False):
+            raise ValueError(f"video.teacher_type: vjepa2 needs video.{key}: false.")
+    if int(_cfg_get(video_cfg, "num_future_frames", 1)) != 1:
+        raise ValueError("video.teacher_type: vjepa2 needs video.num_future_frames: 1.")
+
+
 def build_video_model(config):
     video_cfg = _video_config(config)
+    if video_teacher_type(video_cfg) == "vjepa2":
+        from lingbotvla.models.vla.vision_models.jepa.teacher import VJepaTeacher
+
+        # fp32 weights under the training loop's bf16 autocast, as the Stage 1 probe features were computed.
+        teacher = VJepaTeacher.from_hf(_cfg_get(video_cfg, "jepa_model_path"), dtype=torch.float32)
+        return teacher.to(_cfg_get(video_cfg, "device", "cuda"))
     try:
         from lingbotvla.models.vla.vision_models.dino_video import build_dino_video_teacher
     except Exception as exc:
@@ -342,8 +375,17 @@ def build_video_model(config):
         ) from exc
     return build_dino_video_teacher(video_cfg)
 
-def get_video_target(video_teacher, pil_images, future_pil_images, config, effective_fps=None):
+def get_video_target(video_teacher, pil_images, future_pil_images, config, effective_fps=None, mid_pil_images=None):
+    """Teacher targets for the first camera.
+
+    dino_video: clip [cur, cur, fut] (use_warmup_frame) or [cur, fut], current target at the last current frame.
+    vjepa2: clip [cur, cur, *mid, fut], one more fut when the frame count is odd, so the first tubelet is the
+    current frame alone and the last tubelet ends at the future frame. `mid_pil_images` is [B, M, 3, H, W].
+    """
     video_cfg = _video_config(config)
+    teacher_type = video_teacher_type(video_cfg)
+    if teacher_type == "dino_video" and mid_pil_images is not None:
+        raise ValueError("mid_pil_images only applies to video.teacher_type: vjepa2.")
     use_patch = bool(_cfg_get(video_cfg, "use_patch_loss", True))
     use_cls = bool(_cfg_get(video_cfg, "use_cls_loss", False))
     if not use_patch and not use_cls:
@@ -382,7 +424,20 @@ def get_video_target(video_teacher, pil_images, future_pil_images, config, effec
     futures = einops.rearrange(futures, "(b n) c h w -> b n c h w", n=num_future_frames)
     future_frames = [futures[:, i] for i in range(num_future_frames)]
 
-    if use_warmup_frame:
+    if teacher_type == "vjepa2":
+        mid_frames = []
+        if mid_pil_images is not None:
+            num_mid = mid_pil_images.shape[1]
+            mids = _rgb_to_unit_float(einops.rearrange(mid_pil_images, "b m c h w -> (b m) c h w").contiguous())
+            if mids.shape[-2:] != (input_size, input_size):
+                mids = F.interpolate(mids, size=(input_size, input_size), mode="bilinear", align_corners=False)
+            mids = einops.rearrange((mids - mean) / std, "(b m) c h w -> b m c h w", m=num_mid)
+            mid_frames = [mids[:, i] for i in range(num_mid)]
+        frames = [current, current, *mid_frames, *future_frames]
+        if len(frames) % 2:
+            frames.append(future_frames[-1])
+        current_index = 0
+    elif use_warmup_frame:
         frames = [current.clone(), current, *future_frames]
         current_index = 1
     else:

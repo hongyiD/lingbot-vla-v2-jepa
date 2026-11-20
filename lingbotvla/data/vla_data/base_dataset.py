@@ -245,7 +245,14 @@ class VLADataset(Dataset):
         fps = self.dataset_meta.fps
         if self.use_future_image:
             offsets = [0, (self.chunk_size - 1) / fps]
-            return {cam: offsets for cam in self.feature_transform.org_features['images']}
+            delta = {cam: offsets for cam in self.feature_transform.org_features['images']}
+            mid_frames = self.feature_transform.future_video_mid_frames
+            if mid_frames:
+                camera = self.feature_transform.video_image_org_key
+                if camera not in delta:
+                    raise ValueError(f"video teacher camera {camera} is not among the dataset image columns {sorted(delta)}")
+                delta[camera] = [0, *[o / fps for o in mid_frames], (self.chunk_size - 1) / fps]
+            return delta
         else:
             return {}
 
