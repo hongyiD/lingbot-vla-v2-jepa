@@ -1,7 +1,7 @@
 # Experiment ledger
 
-- entries: 11, submissions: 0
-- rendered: 2026-11-20T12:43:14+08:00 (source of truth: ledger.jsonl)
+- entries: 12, submissions: 0
+- rendered: 2026-11-20T12:50:33+08:00 (source of truth: ledger.jsonl)
 
 | id | time | kind | title | fields | hashes |
 |---|---|---|---|---|---|
@@ -16,3 +16,4 @@
 | 9 | 2026-11-17T15:26:57+08:00 | run | Pilot 2 (image context), seed 42, 2147 steps: B1@0.004, B0@0.004 | B1_gap=4.6e-2, B1_minus_B0_ACzero_last1000=-0.0000+-0.0002, VLA_rel_diff=-0.14%+-0.05%, commit=56e49f1, image_vs_image_future_ACzero=B0 +0.0245, B1 +0.0248, runs=pilot2_B1_img pilot2_B0_img, verdict=not passed; future tokens were not the shortcut |  |
 | 10 | 2026-11-17T15:26:57+08:00 | decision | Close the action-conditioned head line (B0/B1) before the main ablation | next=re-prioritise the overall plan, plan=plan/02-action-conditioned-prediction.md, reason=B1 = B0 in AC loss and VLA loss in both pilots; likely the VLA image tokens already encode the expert action (deterministic demos), so the action input is redundant | 02-action-conditioned-prediction.md:74774b779a |
 | 11 | 2026-11-20T12:43:14+08:00 | run | B1 full run jepa_B1_s42 (image context, weight 0.004), 4 GPU x mb64, 10735 steps | StepTime_median=3.557s, checkpoints=global_step_2147..10735 every 2147, hf_ckpt all finished, commit=26a3978, ep5_AC=0.3099, ep5_ACgap=0.0555, ep5_Depth=0.2513, ep5_FutD=0.3376, ep5_FutV=0.0261, ep5_VLA=0.0141, nonfinite=0, note=baseline train_c50_v1 log not yet located for same-step comparison, wall=11.49h |  |
+| 12 | 2026-11-20T12:50:33+08:00 | note | B1 full run vs A0 train_c50_v1 (seed 42, same recipe): training-loss comparison | Depth_paired=ep5 +3.11%, FutD_paired=ep5 -0.45%, FutV_paired=ep5 -1.70%, StepTime_median=B1 3.557s vs A0 3.335s (+7%), VLA_ratio_of_means=ep1 +0.55% [+0.20,+0.84]; ep2 +0.16%; ep3 +0.11%; ep4 -0.05%; ep5 +0.04% [-0.72,+0.79], note=per-step mean of ratios (+1.0..+1.6%) is biased by independent flow-matching noise; use ratio of means, verdict=VLA unchanged (<=1.05x criterion met); success-rate eval pending |  |
