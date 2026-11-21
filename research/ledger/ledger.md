@@ -1,7 +1,7 @@
 # Experiment ledger
 
-- entries: 16, submissions: 0
-- rendered: 2026-11-20T18:03:00+08:00 (source of truth: ledger.jsonl)
+- entries: 17, submissions: 0
+- rendered: 2026-11-21T13:53:16+08:00 (source of truth: ledger.jsonl)
 
 | id | time | kind | title | fields | hashes |
 |---|---|---|---|---|---|
@@ -21,3 +21,4 @@
 | 14 | 2026-11-20T15:28:35+08:00 | note | A2 Pod self-check (check_pipeline data/video --variant V2) and MSE weight calibration | commit=fa8730e, data=5/5 PASS: labels, rows, pixels incl. mid frames [8,16,24,33,41] bit-equal, fps, config teacher_mismatch={}, mse_loss_weight=0.0026, next=smoke: A0 regression + A2 s3b 30 steps, samples=64, scale=S_dino cur/fut=0.01250/0.01592, S_jepa cur/fut=5.529/5.278, ratio cur/fut=0.00226/0.00302, v2_target=PASS cosine_mean=0.999999 min=0.999997 rel_l2=0.00166 (bf16 rounding of training targets), pixels_equal |  |
 | 15 | 2026-11-20T18:00:33+08:00 | run | A2 smoke (s3b: 4 GPU x mb64, 30 steps) and A0 regression with code fa8730e | A0_regression=step1 Depth/FutD/FutV/VLA identical to old S3b (3.4065/3.3073/0.7448/0.3584), A2_FutV_per10=0.4353, 0.4156, 0.4023, A2_VLA_per10=0.2882, 0.2092, 0.1744, A2_step1=Depth/FutD identical to A0; FutV 0.4468 vs A0 0.7448; VLA 0.3608 vs 0.3584 (RNG: no DINO teacher built), StepTime_median=A2 3.30s vs A0 3.40s, commit=fa8730e, mse_loss_weight=0.0026, nonfinite=0, outside_StepTime=A2 +0.03s vs A0 +0.02s per step, verdict=pass; next pilot --stop_step 2147 |  |
 | 16 | 2026-11-20T18:03:00+08:00 | note | A2 vs A0 smoke per 10 steps: FutV starts lower and meets A0 by step 30; VLA within noise | A0_FutV_per10=0.6000, 0.4578, 0.3977, A0_VLA_per10=0.2817, 0.2079, 0.1735, A2_FutV_per10=0.4353, 0.4156, 0.4023, A2_VLA_per10=0.2882 (+2.3%), 0.2092 (+0.6%), 0.1744 (+0.5%), note=FutV values are not comparable across teachers; first bin VLA gap includes the step-1 RNG difference, verdict=no change; pilot as planned |  |
+| 17 | 2026-11-21T13:53:16+08:00 | run | A2 pilot jepa_A2_s42: epoch 1 (stop_step 2147 of 10735), V-JEPA 2 8-frame teacher, mse_loss_weight 0.0026 | FutV_last1500=-7.5% (A0-family flat by epoch 5 at 0.026), checkpoint=runs/jepa_A2_s42/checkpoints/global_step_2147 (dcp + hf), commit=fa8730e, ep1_Depth=0.5030 (A0 0.5056 -0.5%, B1 0.5073), ep1_FutD=0.6013 (A0 0.6031 -0.3%, B1 0.6019), ep1_FutV=0.1809 (DINO-target runs 0.066; not comparable), ep1_VLA=0.0439 (A0 0.0437 +0.5%, B1 0.0439), nonfinite=0, per537_FutV=0.2468, 0.1669, 0.1576, 0.1523, per537_VLA=0.0718, 0.0398, 0.0339, 0.0302, verdict=G3 pass (VLA <= 1.05x A0); resume to 10735, wall=2.22h, StepTime median 3.344s (A0 3.303s, B1 3.530s) |  |
