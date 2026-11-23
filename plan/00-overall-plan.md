@@ -6,6 +6,7 @@
 - 阶段一的详细执行计划：[`01-stage1-offline-probe.md`](01-stage1-offline-probe.md)
 - 阶段二（改道后）的详细计划：[`02-action-conditioned-prediction.md`](02-action-conditioned-prediction.md)
 - A2（V-JEPA 2 的 8 帧教师替换 DINO-Video）：[`03-jepa-teacher-a2.md`](03-jepa-teacher-a2.md)
+- 评测链路（B300 上的 RoboTwin 闭环评测）：[`04-eval-chain.md`](04-eval-chain.md)
 
 > **v0.2 改道说明（2026-11-16）。**
 > - 阶段一按预注册标准没有通过 G1：JEPA 特征没有在逆动力学探针上显著优于 DINO-Video。报告见 `research/jepa_probe/reports/stage1_report.md`。
@@ -23,6 +24,10 @@
 > - 动作预测头这条：B1（`context: image`，权重 0.004）的完整训练已跑完，VLA loss 与 A0 无差别，成功率待评测（台账 #11、#12）。
 > - JEPA 这条：重启 A2，用阶段一的 V2（V-JEPA 2 ViT-L，8 帧 clip）替换 DINO-Video。这是 G1 未通过之后的单 seed 参考 run，不是主消融。设计、代码和进度见 `03` 文档；代码和本地测试已完成，待 Pod 自检。
 > - 教师抽象按 `03` 文档实现：配置项是 `video.teacher_type`（`dino_video` / `vjepa2`）、`video.jepa_model_path` 和 `data.future_video_mid_frames`，取代下文阶段二第 2 条里 v0.1 设想的那组 `jepa_*` 配置项。
+>
+> **2026-11-23：A2 完整训练跑完，转向评测链路。**
+> - A2 的主任务 loss 比 A0 高 3.3%（第 5 个 epoch，区间 [+2.7%, +4.0%]），当前深度好 0.4%；B1 正好相反（台账 #17–#20）。
+> - 三个完整 checkpoint 已经无法靠训练 loss 分高下，先打通评测链路，暂停新的训练臂（台账 #21）。步骤和进度见 `04` 文档。
 
 ---
 
@@ -397,7 +402,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 |---|---|---|---|
 | 训练镜像 | `embodiedx/docker/lingbotvla/`（含 Dockerfile、`build_image.sh`、`check_image.sh`） | 全部阶段 | 尽量不重新打镜像；需要新依赖时装到 PVC 上的 overlay 目录 |
 | 夜间自动停止 | PVC 上的 `$D/bin/stop_after_save.sh`（台账 #12、#20）；仓库里的 `train.stop_step`（`make_train_configs.py --stop_step`） | 阶段 3–6 | 脚本已在跨夜续训中验证过。`stop_step` 在训练代码内部停下并存盘，学习率调度不变，续训时如果已越过会报错；还没在 Pod 上实测，用法见 `02` 文档 4.4 节 |
-| 渲染探针与 OIDN 替换 | `embodiedx/taip/rt_probe.py`、`embodiedx/taip/oidn_swap.sh` | 阶段 0 | OIDN 替换待验收 |
+| 渲染探针与 OIDN 替换 | `research/tools/pod/rt_probe.py`、`research/tools/pod/oidn_swap.sh`（从 `embodiedx/taip/` 迁入） | 阶段 0 | 探针新增降噪判据；OIDN 替换待验收，见 `04` 文档 |
 | 下载与校验 | `embodiedx/tools/hf_manifest.py`、`verify_downloads.py`、`extract_archives.py`、`mirror_fetch.sh`（训练 runbook 5.9） | 阶段 6 | hf-mirror 的 API 会卡住，按清单用 curl 直接下载；阶段六用到时再迁移 |
 | 数据转换链路 | `embodiedx/patches/robotwin-13c3c47-pi0-convert-deterministic.patch`，训练 runbook 5.3–5.5 | 阶段 6 | v2.1 → v3.0 必须转换 |
 | 平台操作说明 | `embodiedx/plans/` 下的各 runbook、`embodiedx/gpu/` | 全部阶段 | 含内部地址，不进仓库 |
