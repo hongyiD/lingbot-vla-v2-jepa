@@ -1,7 +1,7 @@
 # LingBot-VLA 2.0 × JEPA 视觉教师替换：总体阶段性实施计划
 
 - 版本：v0.2（2026-11-16）
-- 工作目录：`/Users/hongyizhao/Desktop/具身智能/model/lingbot-vla-v2`（LingBot 官方仓库，`main` @ `be969b8`）
+- 工作目录：本仓库，fork 自 LingBot 官方仓库（`main` @ `be969b8`）
 - 参考资料：`embodiedx/`，即此前在 TAIP B300 上的训练、数据转换和评测环境记录。只读引用，`embodiedx/refs/` 下的代码不改
 - 阶段一的详细执行计划：[`01-stage1-offline-probe.md`](01-stage1-offline-probe.md)
 - 阶段二（改道后）的详细计划：[`02-action-conditioned-prediction.md`](02-action-conditioned-prediction.md)
