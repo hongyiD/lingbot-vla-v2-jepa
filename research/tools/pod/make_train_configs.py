@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write LingBot training configs for the TAIP Pod, starting from the official configs/vla/robotwin/robotwin.yaml.
+"""Write LingBot training configs for the training Pod, starting from the official configs/vla/robotwin/robotwin.yaml.
 
 Only weight/data paths, batch sizes and step counts change. LingBot does not derive gradient accumulation:
 global_batch_size must equal micro_batch_size x GPUs x gradient_accumulation_steps or arguments.py raises, so the

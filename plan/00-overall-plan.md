@@ -2,7 +2,7 @@
 
 - 版本：v0.2（2026-11-16）
 - 工作目录：本仓库，fork 自 LingBot 官方仓库（`main` @ `be969b8`）
-- 参考资料：`embodiedx/`，即此前在 TAIP B300 上的训练、数据转换和评测环境记录。只读引用，`embodiedx/refs/` 下的代码不改
+- 参考资料：`embodiedx/`，即此前在训练集群 B300 上的训练、数据转换和评测环境记录。只读引用，`embodiedx/refs/` 下的代码不改
 - 阶段一的详细执行计划：[`01-stage1-offline-probe.md`](01-stage1-offline-probe.md)
 - 阶段二（改道后）的详细计划：[`02-action-conditioned-prediction.md`](02-action-conditioned-prediction.md)
 - A2（V-JEPA 2 的 8 帧教师替换 DINO-Video）：[`03-jepa-teacher-a2.md`](03-jepa-teacher-a2.md)
@@ -223,8 +223,8 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 
 | 资源 | 现状 | 来源 |
 |---|---|---|
-| TAIP `lingbot-train` | 4 张 B300（268 GiB，sm_103），夜间可用；无外网，可走 Pod 代理（8 连接约 28 MB/s），可用 hf-mirror | 台账 #12；训练 runbook 第 1 节 |
-| TAIP `lingbot-data` | 仅 CPU，32 核；与训练 Pod 不能同时满配额运行 | 训练 runbook 第 3 节 |
+| 训练集群 `lingbot-train` | 4 张 B300（268 GiB，sm_103），夜间可用；无外网，可走 Pod 代理（8 连接约 28 MB/s），可用 hf-mirror | 台账 #12；训练 runbook 第 1 节 |
+| 训练集群 `lingbot-data` | 仅 CPU，32 核；与训练 Pod 不能同时满配额运行 | 训练 runbook 第 3 节 |
 | 4090 | 有外网，白天可用；用于构建镜像、下载和打包 | 训练 runbook 第 0 节 |
 | PVC `/mnt/work` | 1.5T；10-24 已用 780G。PVC 个数配额 5/5 已满 | 台账 #23 |
 | 训练镜像 | `<平台镜像仓库>/lingbotvla-train:20261017-be969b8-r1`（完整地址见 `embodiedx` 的训练 runbook），含 torch 2.8 cu129、transformers 4.57.3、lerobot 0.4.2、av、torchcodec；sm_103 内核已验证 | 台账 #1、#13 |
@@ -262,7 +262,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
    - 夜间窗口是否还在，有没有可能白天也开放；
    - GPU 卡数配额；
    - PVC 余量和扩容方式（PVC 个数配额已满，只能扩现有卷或删卷再建）；
-   - 有没有把 checkpoint 从 TAIP 传到 4090 的正规通道。
+   - 有没有把 checkpoint 从训练集群传到 4090 的正规通道。
 3. **代码同步通道。**
    - 代码托管在个人 GitHub 的私有仓库 `lingbot-vla-v2-jepa`。官方仓库作为 `upstream` 远端，用来同步官方更新。
    - 训练机上不放 GitHub 凭证。每次同步时，在本地用 `git archive` 打包要部署的提交（几 MB），通过 PVC 页面上传到卷里的 `embodiedx/code/`（Pod 里是 `$D/code/`），解压到 `$D/code/lingbot-vla-v2-jepa`，并把 commit 和 sha256 记入台账。`/mnt/vla` 在两个 Pod 里都是只读挂载，不能往里解压。
@@ -389,7 +389,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 
 | 资产 | 位置 | 用在哪 | 说明 |
 |---|---|---|---|
-| Pod 环境与启动函数 | `research/tools/pod/pod.env`：`lb_run`、`smoke_stats`、`step_wall` | 阶段 1–6 | 由 `taip.env` 改来：`LB` 默认取 pod.env 所在的仓库目录（即同步到 PVC 的本仓库，`$D/code/lingbot-vla-v2-jepa`），并放在 `PYTHONPATH` 最前面，覆盖镜像里的旧代码；各变量都可以先 export 覆盖 |
+| Pod 环境与启动函数 | `research/tools/pod/pod.env`：`lb_run`、`smoke_stats`、`step_wall` | 阶段 1–6 | 由此前的 Pod 环境脚本改来：`LB` 默认取 pod.env 所在的仓库目录（即同步到 PVC 的本仓库，`$D/code/lingbot-vla-v2-jepa`），并放在 `PYTHONPATH` 最前面，覆盖镜像里的旧代码；各变量都可以先 export 覆盖 |
 | 数据读取补丁 | `research/tools/pod/agx_run.py` | 阶段 1–6 | 训练必须带上（`lb_run` 已经内置）；阶段一读标签也照它的做法，不解码图像列 |
 | 配置生成 | `research/tools/pod/make_train_configs.py` | 阶段 2–4 | 已有 `--arm A0/A2/B0/B1`、`--seed`、`--ac_weight`、`--ac_context`、`--video_mse_weight`（A2，见 `03` 文档第 3 节）；A1 做好后再加 |
 | 训练指标解析 | `research/tools/pod/train_metrics.py` | 阶段 3–4 | 已解析 `AC_Loss`、`AC_Shuffle_Gap`，`--ac_calibrate` 给出权重建议；`FutureJepa_Loss` 列随 A3 暂缓 |
@@ -402,7 +402,7 @@ A2 的 head 沿用 DINO-Video 的预训练权重继续训练，不重新初始�
 |---|---|---|---|
 | 训练镜像 | `embodiedx/docker/lingbotvla/`（含 Dockerfile、`build_image.sh`、`check_image.sh`） | 全部阶段 | 尽量不重新打镜像；需要新依赖时装到 PVC 上的 overlay 目录 |
 | 夜间自动停止 | PVC 上的 `$D/bin/stop_after_save.sh`（台账 #12、#20）；仓库里的 `train.stop_step`（`make_train_configs.py --stop_step`） | 阶段 3–6 | 脚本已在跨夜续训中验证过。`stop_step` 在训练代码内部停下并存盘，学习率调度不变，续训时如果已越过会报错；还没在 Pod 上实测，用法见 `02` 文档 4.4 节 |
-| 渲染探针与 OIDN 替换 | `research/tools/pod/rt_probe.py`、`research/tools/pod/oidn_swap.sh`（从 `embodiedx/taip/` 迁入） | 阶段 0 | 探针新增降噪判据；OIDN 替换待验收，见 `04` 文档 |
+| 渲染探针与 OIDN 替换 | `research/tools/pod/rt_probe.py`、`research/tools/pod/oidn_swap.sh`（从 `embodiedx/` 迁入） | 阶段 0 | 探针新增降噪判据；OIDN 替换待验收，见 `04` 文档 |
 | 下载与校验 | `embodiedx/tools/hf_manifest.py`、`verify_downloads.py`、`extract_archives.py`、`mirror_fetch.sh`（训练 runbook 5.9） | 阶段 6 | hf-mirror 的 API 会卡住，按清单用 curl 直接下载；阶段六用到时再迁移 |
 | 数据转换链路 | `embodiedx/patches/robotwin-13c3c47-pi0-convert-deterministic.patch`，训练 runbook 5.3–5.5 | 阶段 6 | v2.1 → v3.0 必须转换 |
 | 平台操作说明 | `embodiedx/plans/` 下的各 runbook、`embodiedx/gpu/` | 全部阶段 | 含内部地址，不进仓库 |
@@ -469,7 +469,7 @@ $D/reports/jepa/              # 汇总报告
 
 1. 夜间窗口（18:30–09:00）现在是否还在，有没有可能整天使用。（运维）
 2. PVC 余量与扩容方式；能否新增 PVC（个数配额已满）。（运维）
-3. 从 TAIP 导出 checkpoint 到 4090 的正规通道。备选是用 `oras` 推到镜像仓库。（运维）
+3. 从训练集群导出 checkpoint 到 4090 的正规通道。备选是用 `oras` 推到镜像仓库。（运维）
 4. 评测的指令类型：沿用官方默认（全部 unseen），还是 clean 用 seen、randomized 用 unseen。（你来定；建议沿用官方默认，便于和官方成绩对照）
 5. 这个研究的产出形式（论文、内部报告或比赛），决定阶段五做到多深、阶段六是否必做。（你来定）
 

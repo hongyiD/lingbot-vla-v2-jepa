@@ -3,7 +3,7 @@
 - 版本：v0.1（2026-11-10）
 - 上级文档：[`00-overall-plan.md`](00-overall-plan.md)（阶段 1，闸门 G1）
 - 代码位置：`research/jepa_probe/`（探针脚本）；`lingbotvla/models/vla/vision_models/jepa/`（JEPA 教师包装，阶段二直接接入训练）
-- 运行位置：TAIP。`lingbot-train` 夜间用 1 张 B300；`lingbot-data` 白天跑 CPU 任务。数据、权重和结果都放在 PVC `$D/jepa/`
+- 运行位置：训练集群。`lingbot-train` 夜间用 1 张 B300；`lingbot-data` 白天跑 CPU 任务。数据、权重和结果都放在 PVC `$D/jepa/`
 
 ---
 
